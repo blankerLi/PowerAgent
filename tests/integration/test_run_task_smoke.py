@@ -79,7 +79,7 @@ def _scripted_propose_fn(rounds: list[list[dict[str, float]]]):
     """
     calls: list[int] = []
 
-    def propose(state) -> ProposeResult:
+    def propose(state, *, round_context) -> ProposeResult:
         index = len(calls)
         calls.append(index)
         if index >= len(rounds):

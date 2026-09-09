@@ -183,7 +183,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 import click
 
@@ -604,30 +604,45 @@ def run_tier(
                 vout_target_v=vout_target_v,
             )
 
+            # 裕量提取失败记在**指标**上，不改 run 的状态。
+            #
+            # design.md §9.3 的字面规定是"`pm.valid=False` 时调用方以
+            # `store.close_run_failed(run_id, 'candidate_rejected',
+            # 'metric_invalid:phase_margin')` 关闭该行"。这条规定与本函数另一条
+            # 更根本的规定冲突，无法同时成立：`close_run_ok()` 必须在指标计算
+            # **之前**调用（上方两条路径都是这么做的——它落的是仿真产物引用与
+            # 耗时，而缓存复用路径同样要走它）。等到裕量提取时 run 已是 `done`，
+            # 再调 `close_run_failed()` 会被 `runs` 的状态机拒绝
+            # （`RunTerminationRejectedError`：只能从 `running` 转出）。
+            #
+            # 这条路径此前从未被执行过，因此这处矛盾一直没暴露：它要求"仿真成功
+            # 但裕量无从定义"，而那需要一个开环幅值全程大于 1 的候选（`rcomp`
+            # 取到域上界 100 kohm 附近，ESR 零点使高频增益不滚降）。注入固定候选
+            # 的冒烟测试挑不到这种点，真实模型第一轮就提了一个。
+            #
+            # 取舍的依据是两层语义的区分：`runs.status` 描述**引擎执行**，而引擎
+            # 确实跑通了、波形也拿到了；失败的是"从波形里提取某个指标"，那属于
+            # `metric_results.valid` 与 `invalid_reason` 这两列——它们正是为此
+            # 存在。把指标提取失败记成 run 失败会混淆这两层，也会让一次真实发生
+            # 过的仿真在预算与缓存的口径里凭空消失。
+            margin_extraction_failed = False
+
             if scenario.require_margin:
                 phase_margin, gain_margin = extract_margin(
                     sim_result.observable_ref, metrics_cfg, run_id=run_id
                 )
-                if not phase_margin.valid:
-                    store.close_run_failed(
-                        run_id, "candidate_rejected", "metric_invalid:phase_margin"
-                    )
-                    margin_failure_count += 1
-                    if tier == "screening":
-                        return TierResult(
-                            passed=False,
-                            stopped_early=True,
-                            failure_class="candidate_rejected",
-                            cause="metric_invalid:phase_margin",
-                            rejected_scenario_id=scenario.scenario_id,
-                            rejected_constraint_names=(),
-                            margin_failure_count=margin_failure_count,
-                        )
-                    # Evaluation 层：记录后继续跑完该层其余场景行（R6.12）。
-                    continue
-
-                margin_failure_count = 0
+                # 无论成败都并入指标：失败也是观测结果。两条 `valid=0 /
+                # invalid_reason='extraction_failed'` 的行落库后，`judge()` 会
+                # 因支撑指标无效而判 `phase_margin_min` 违反（R9.3），
+                # worst-case 聚合的完备性过滤也会据此排除该候选。丢掉它们则
+                # "这个候选的裕量提不出来"在数据库里无迹可寻。
                 metrics = [*metrics, phase_margin, gain_margin]
+
+                if phase_margin.valid:
+                    margin_failure_count = 0
+                else:
+                    margin_extraction_failed = True
+                    margin_failure_count += 1
 
             cr = judge(
                 metrics,
@@ -637,6 +652,27 @@ def run_tier(
                 run_id=run_id,
             )
             store.write_evaluation(run_id, metrics, cr, eval_key)
+
+            # 筛选层的裕量提取失败要提前终止该层，且必须在指标与判定落库
+            # **之后**——原实现在这里 `continue`，跳过了 `write_evaluation()`，
+            # 那条 run 便既没有指标也没有约束判定，只剩一行状态。
+            #
+            # 判断放在这个块内而不是下方的 `if not cr.feasible` 旁边：裕量提取
+            # 只发生在这个分支（第一级缓存复用旧指标时不重算裕量），把标志的
+            # 定义与使用放在同一个作用域里，就不会出现"某条路径没定义它"的情况。
+            #
+            # 评价层不在此返回：它按 R6.12 跑完该层其余场景行，可行性交由下方
+            # 统一的 `cr.feasible` 判定与 worst-case 聚合处理。
+            if margin_extraction_failed and tier == "screening":
+                return TierResult(
+                    passed=False,
+                    stopped_early=True,
+                    failure_class="candidate_rejected",
+                    cause="metric_invalid:phase_margin",
+                    rejected_scenario_id=scenario.scenario_id,
+                    rejected_constraint_names=(),
+                    margin_failure_count=margin_failure_count,
+                )
 
         # -------------------------------------------------------------
         # 可行性判定：Screening 层任一场景不可行即提前拒绝；Evaluation 层
@@ -714,7 +750,7 @@ def run_tier(
 #
 #     def run_task(task_cfg, model_cfg, metrics_cfg, constraints_cfg, *,
 #                  resume: bool = False,
-#                  propose_fn: Callable[[SearchState], ProposeResult] | None = None,
+#                  propose_fn: ProposeFn | None = None,
 #                  probe_single_run_s: float | None = None,
 #                  session: MatlabSession | None = None,
 #                  store: Store | None = None,
@@ -1075,15 +1111,64 @@ class TaskOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class RoundContext:
+    """本轮的调度上下文，随 `state` 一并交给 `propose_fn`（本文件新增类型）。
+
+    `state`（`controller.stop.SearchState`）只含 `should_stop()` 需要的
+    `current_best`，而提案侧还需要三样主循环才知道的量：
+
+    - `no_improvement_rounds`：`agent.validate` 的校验模式由它与"是否已有最佳候选"
+      共同决定（`design.md` §6.7）。这个值只有主循环持有，从数据库反推需要按轮次
+      重算历史最佳序列，既绕又依赖对"某一轮的最佳"的额外定义。
+    - `round_index`：被拒候选落 `rejections` 表时要带上，它是搜索轨迹的一部分。
+    - `remaining_budget`：进提案上下文，让模型知道还能试多少次。
+
+    **校验模式的决定权因此仍在 controller**：这里传出的是事实（无改善了几轮），
+    不是结论（该用哪种模式）。提案器拿到它也无法据此放宽自己被校验的严格度。
+    """
+
+    round_index: int
+    no_improvement_rounds: int
+    remaining_budget: int
+
+
+@dataclass(frozen=True, slots=True)
 class ProposeResult:
     """`propose_fn` 的返回契约（本文件新增，非 design.md 登记类型；见模块
     顶部"14.5"一节"2. `propose_fn`"的详细说明）。"""
 
     candidates: Sequence[Candidate] = ()
     stop_recommendation: bool = False
+    llm_call_id: str | None = None
+    """产生本轮候选的那次 LLM 调用，落进 `candidates.origin_llm_call_id`。
+
+    放在结果级而不是候选级：一次调用一次性给出整批候选，逐个候选各带一份会是同一个
+    值的多份拷贝。非 LLM 来源的 `propose_fn`（脚本注入、网格枚举）留 `None`，
+    与 `origin='agent'` 之外的来源一致。
+
+    缺了它，"这个设计是模型在看到什么上下文之后提出的"就再也答不上来——`llm_calls`
+    行还在，但没有任何列把它和候选连起来。审计链断在这一环上不会报错，只会在需要
+    复盘某个候选的来历时才发现。
+    """
 
 
-def _default_propose_fn(state: SearchState) -> ProposeResult:
+class ProposeFn(Protocol):
+    """`propose_fn` 的调用形状。
+
+    用 `Protocol` 而不是 `Callable[..., ProposeResult]`：`round_context` 是
+    **仅关键字**参数，而 `Callable[...]` 表达不了关键字参数，写成
+    `Callable[[SearchState, RoundContext], ProposeResult]` 会把它说成位置参数——
+    那样的注解与实际调用方式不符，类型检查便失去了意义。
+    """
+
+    def __call__(
+        self, state: SearchState, *, round_context: RoundContext
+    ) -> ProposeResult: ...
+
+
+def _default_propose_fn(
+    state: SearchState, *, round_context: RoundContext
+) -> ProposeResult:
     """`propose_fn` 的默认实现：本轮返回空候选集，不调用任何 LLM、不猜测
     任何候选（见模块顶部"2. `propose_fn`"一节）。"""
     return ProposeResult(candidates=(), stop_recommendation=False)
@@ -1473,7 +1558,7 @@ def run_task(
     *,
     resume: bool = False,
     yes: bool = False,
-    propose_fn: Callable[[SearchState], ProposeResult] | None = None,
+    propose_fn: ProposeFn | None = None,
     probe_single_run_s: float | None = None,
     session: MatlabSession | None = None,
     store: Store | None = None,
@@ -1670,7 +1755,14 @@ def run_task(
         )
 
         state = SearchState(current_best=best_before)
-        propose_result = propose(state)
+        propose_result = propose(
+            state,
+            round_context=RoundContext(
+                round_index=round_index,
+                no_improvement_rounds=no_improvement_rounds,
+                remaining_budget=ledger.remaining(),
+            ),
+        )
 
         if not propose_result.candidates:
             no_improvement_rounds += 1
@@ -1696,7 +1788,11 @@ def run_task(
                 break
 
             store.persist_candidate(
-                candidate, task_id=task_id, origin="agent", round_index=round_index
+                candidate,
+                task_id=task_id,
+                origin="agent",
+                round_index=round_index,
+                origin_llm_call_id=propose_result.llm_call_id,
             )
 
             screening_passed, margin_failure_count = _run_scenarios_with_retry(

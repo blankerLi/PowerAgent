@@ -22,6 +22,10 @@ artifacts/*
 # model_package_hash）。不入库则任何人 clone 后都无法通过 preflight。
 !artifacts/margin_cross_check.json
 !artifacts/dual_model_consistency.json
+# 真实 LLM 寻优的测量记录。与上面两份不同，它不是确定性证据（重跑数字会变，
+# 也带时间戳），preflight 不读它。入库的理由是它承载项目的实测表现数据，
+# 别人 clone 后无需自备 API Key 也能看到这条链路跑出过什么结果。
+!artifacts/llm_search_report.json
 *.db
 *.db-journal
 *.sqlite

@@ -1,0 +1,38 @@
+{
+  "best": {
+    "candidate_id": "3314690ce93c4d6f",
+    "objective_target_us": 25.0,
+    "parameters_si": {
+      "ccomp": 5.33669923121e-10,
+      "rcomp": 18738.1742286
+    },
+    "target_reached": true,
+    "worst_case_objective_us": 18.2
+  },
+  "budget": {
+    "engine_starts_used": 16,
+    "max_engine_starts": 200
+  },
+  "candidates": {
+    "accepted": 6,
+    "first_pass_rate": 1.0,
+    "proposed": 6,
+    "rejected": 0
+  },
+  "cause": null,
+  "llm": {
+    "model_id": "deepseek-v4-flash",
+    "outcomes": {
+      "ok": 1
+    },
+    "total_tokens": 12113
+  },
+  "note": "一次真实 LLM 寻优的测量记录，非确定性证据；重跑数字会变。确定性门禁证据见 margin_cross_check.json 与 dual_model_consistency.json。",
+  "recorded_at_utc": "2026-09-09T07:45:39+00:00",
+  "rejection_reasons": {},
+  "rounds": 1,
+  "stop_reason": "target_reached",
+  "task_id": "comp_tuning_v1",
+  "wallclock_s": 120.94,
+  "workspace": "artifacts/llm_search/20260909T074337Z"
+}
