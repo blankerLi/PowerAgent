@@ -32,7 +32,15 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["--strict-markers", "-q"]
+# 默认排除 live_llm：那些测试会真实调用 LLM，慢、消耗额度、且可能因网络波动而失败，
+# 不该出现在默认测试路径里。需要时显式选择：`pytest -m live_llm`（命令行的 -m 会
+# 覆盖这里的设置）。仅靠"有没有 API Key"来决定跑不跑是不够的——本地配了 .env 之后
+# 每次跑测试都会连网。
+addopts = ["--strict-markers", "-q", "-m", "not live_llm"]
+# 不按类名收集测试。本项目的测试全是函数式，而默认的 `Test*` 规则会把领域类型
+# （如 agent.state.TestedPoint）误认作测试类并发出收集警告。改配置比给领域类型加
+# 一个 `__test__ = False` 干净：领域类型不该知道测试框架的存在。
+python_classes = []
 markers = [
     "unit: 纯函数确定性断言（配置校验、哈希、排序、校验器）",
     "sim: Python 仿真后端的物理性质（跑数值求解，秒级）",
