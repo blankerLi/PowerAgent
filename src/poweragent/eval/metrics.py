@@ -499,6 +499,18 @@ def _apply_filter(time: np.ndarray, data: np.ndarray, filter_spec: str) -> np.nd
     低频包络」这个粗粒度效果，选用滑动平均是为了实现简单、行为可预测；若后续
     需要更精确的滤波器设计，替换本函数即可，不影响调用方）。非 `"none"` 且不可
     解析为浮点数时抛出 `ValueError`（见模块 docstring 的「已知架构缺口」）。
+
+    边界处理必须用边界值延拓，不能用零填充
+    ----------------------------------------
+    卷积前把数据两端按端点值延拓，再取 `mode='valid'`。直接用
+    `np.convolve(..., mode='same')` 是错的：它在信号两端补零，于是首末几个样本被
+    人为拉向零，而 `output_ripple` 取的正是窗口内的峰峰值，这个虚假的下沉会被
+    整个计入结果。
+
+    实测过这个错误的量级：稳态窗口内电压恒为 0.804 V（真实峰峰值为零）时，
+    零填充给出的峰峰值是 0.402 V——正好是首个样本被算成 0.804×0.5 的结果。
+    也就是说指标测出来的不是纹波，而是滤波器的边界伪影，且误差与信号绝对值同阶。
+    边界延拓下恒定信号滤波后仍恒定，峰峰值为零。
     """
 
     if filter_spec == "none":
@@ -525,7 +537,12 @@ def _apply_filter(time: np.ndarray, data: np.ndarray, filter_spec: str) -> np.nd
         return data
 
     kernel = np.ones(window_samples) / window_samples
-    return np.convolve(data, kernel, mode="same")
+    # 两端按端点值延拓后取 'valid'：输出长度仍等于输入长度，但首末样本不再被
+    # 零填充拉低（见 docstring「边界处理」一节）。
+    pad_left = window_samples // 2
+    pad_right = window_samples - 1 - pad_left
+    padded = np.pad(data, (pad_left, pad_right), mode="edge")
+    return np.convolve(padded, kernel, mode="valid")
 
 
 def output_ripple(w: Waveform, spec: TimeDomainMetricSpec, *, run_id: str) -> MetricResult:
