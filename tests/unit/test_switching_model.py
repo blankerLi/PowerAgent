@@ -296,3 +296,92 @@ def test_repeated_runs_are_bit_identical(sw_spec) -> None:
     assert np.array_equal(first.time_s, second.time_s)
     assert np.array_equal(first.vout_v, second.vout_v)
     assert np.array_equal(first.iphase_a, second.iphase_a)
+
+
+# --------------------------------------------------------------------------
+# 双模型一致性记录（scripts/dual_model_consistency.py 的产物）
+# --------------------------------------------------------------------------
+
+
+def test_consistency_record_exists_and_reports_agreement(repo_root: Path) -> None:
+    """一致性记录存在且结论为一致。
+
+    `preflight` 的 `check_dual_model_consistency()` 要求 `ok` 为真才放行。分层执行
+    的全部价值建立在"筛选层筛掉的候选在评价层也确实不好"这个假设上，这份记录就是
+    给那个假设立的证据。
+    """
+    import json
+
+    record_path = repo_root / "artifacts" / "dual_model_consistency.json"
+    assert record_path.is_file(), (
+        "缺少一致性记录；请运行 python scripts/dual_model_consistency.py"
+    )
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["ok"] is True
+    assert record["checkpoints"], "记录应至少含一个核对点"
+
+    for point in record["checkpoints"]:
+        assert point["status"] == "compared"
+        assert point["steady"]["within_tolerance"]
+        assert point["transient"]["within_tolerance"]
+
+
+def test_consistency_record_is_bound_to_the_current_model_package(
+    repo_root: Path, config_dir: Path
+) -> None:
+    """记录内嵌的 `model_package_hash` 与当前依赖闭包的重算值一致。
+
+    这是 preflight 的第三条判据。它的意思是：两个保真度是否一致的结论**只对当时
+    那份模型成立**，改动任何模型文件都会使记录失效，必须重跑核对。
+    """
+    import json
+
+    from poweragent.config.loader import load_all
+    from poweragent.sim.hashing import model_package_hash, resolve_dependency_closure
+
+    bundle = load_all(config_dir)
+    model_dump = bundle.model.model_dump(mode="json")
+    closure = resolve_dependency_closure(model_dump, base_dir=repo_root)
+    current_hash = model_package_hash(closure, model_dump)
+
+    record = json.loads(
+        (repo_root / "artifacts" / "dual_model_consistency.json").read_text("utf-8")
+    )
+    assert record["model_package_hash"] == current_hash, (
+        "记录已与当前模型包脱钩；请重跑 python scripts/dual_model_consistency.py"
+    )
+
+
+def test_averaged_undershoot_is_independent_of_simulation_length(
+    avg_spec, sw_spec
+) -> None:
+    """平均模型的下冲与仿真总时长无关。
+
+    这条守护的是一个曾经被违反的正确性要求。`solve_ivp` 的初始步长按积分区间长度
+    启发式选取，而 `t_eval` 只控制输出采样、不约束内部步长；下冲峰值出现在阶跃后
+    几微秒内，区间越长、步长越大，峰值就越容易被稠密插值抹平。实测同一候选同一
+    工况下，下冲随 `stop_time` 从 34.6 mV 漂到 30.96 mV。
+
+    缓存命中判等、复现性回归门禁、双模型一致性核对全都建立在"同一候选同一场景结果
+    唯一"之上，因此这不是精度问题而是正确性问题。修法是把步长上限锁到输出网格间距。
+    """
+    undershoots = []
+    for stop_time_s in (200e-6, 400e-6, 800e-6):
+        run = simulate_averaged(
+            avg_spec,
+            SCREENING,
+            rcomp_ohm=BASELINE[0],
+            ccomp_f=BASELINE[1],
+            stop_time_s=stop_time_s,
+            rel_tol=1e-4,
+            guard_vout_abs_max=GUARD_VOUT,
+            guard_iphase_abs_max=GUARD_IPHASE,
+        )
+        undershoots.append(VOUT_TARGET - float(run.vout_v.min()))
+
+    spread = max(undershoots) - min(undershoots)
+    assert spread < 1e-5, (
+        f"下冲随 stop_time 变化 {spread * 1e3:.3f} mV，应当无关: "
+        f"{[f'{u * 1e3:.3f}mV' for u in undershoots]}"
+    )
