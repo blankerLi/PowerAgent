@@ -35,7 +35,6 @@ control:
   compensator: type_ii_gm
   gm_s: 200.0e-6
   ri_ohm: 2.0e-3
-  current_loop_bw_hz: 100.0e3
   i_limit_a: 300.0
 
 modulator:

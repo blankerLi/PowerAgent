@@ -217,13 +217,36 @@ def test_higher_temperature_deepens_undershoot(spec) -> None:
     )
 
 
-def test_lower_input_voltage_reduces_current_loop_bandwidth(spec) -> None:
-    """输入电压降低使电感电流可达变化率下降，电流内环带宽随之降低。
+def test_input_voltage_compresses_the_large_signal_slew_margin(spec) -> None:
+    """输入电压降低减小电感电流的最大可达变化率，压缩追赶负载的余量。
 
-    这是评价工况取输入电压下限的物理理由：内环变慢会直接压低外环的相位裕量。
+    这条钉住的是输入电压起作用的**机理**，与温度不同：温度压低环路增益，输入电压
+    压缩大信号余量。余量本身不大——评价工况约 267 A/µs 对负载 200 A/µs，只有 1.3 倍，
+    所以不能像早先注释里写的那样说成"远快于负载斜率、不构成限制"。把实测比例钉在
+    测试里，防止在报告或讲述中把这件事描述反。
     """
-    assert spec.current_loop_bw_hz(10.8) < spec.current_loop_bw_hz(12.0)
-    assert spec.current_loop_bw_hz(12.0) == pytest.approx(spec.current_loop_bw_nom_hz)
+    slew_low = spec.max_current_slew_a_per_s(10.8)
+    slew_nom = spec.max_current_slew_a_per_s(12.0)
+    assert slew_low < slew_nom
+
+    load_slew_a_per_s = EVALUATION.slew_a_per_us * 1e6
+    margin = slew_low / load_slew_a_per_s
+    assert 1.0 < margin < 2.0, f"追赶余量应在 1~2 倍之间，实测 {margin:.2f}"
+
+
+def test_sampling_delay_is_set_by_effective_switching_frequency(spec) -> None:
+    """调制器延迟取半个**有效**开关周期，分母含相数。
+
+    多相交错使各相轮流采样，有效采样率是单相开关频率的 N 倍。用 `0.5/fsw`（漏掉
+    相数）会让平均模型系统性偏悲观，与开关模型的下冲偏差达 20%——而偏悲观的筛选层
+    会误杀实际可行的候选，且被误杀者不会进入评价层得到纠正。
+    """
+    assert spec.modulator_delay_s == pytest.approx(
+        0.5 / (spec.n_phase * spec.fsw_hz)
+    )
+    # 等效带宽应落在 Ridley 采样保持模型给出的 N*fsw/pi 附近。
+    equivalent_bw = 1.0 / (2.0 * np.pi * spec.modulator_delay_s)
+    assert equivalent_bw == pytest.approx(spec.n_phase * spec.fsw_hz / np.pi)
 
 
 def test_evaluation_scenario_is_harsher_than_screening(spec) -> None:
@@ -242,16 +265,50 @@ def test_evaluation_scenario_is_harsher_than_screening(spec) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_extreme_parameters_are_reported_as_diverged(spec) -> None:
-    """域下限的极端参数组合应被判为发散，而非返回一条貌似正常的曲线。
+def test_divergence_guard_mechanism_triggers_and_reports(spec) -> None:
+    """发散判据的终止事件能触发、能提前退出、并如实报告原因。
 
-    Ccomp 取域下限时补偿零点被推到 MHz 量级，补偿器退化为高增益纯积分，环路
-    失稳。这类候选必须被明确标为 `diverged` 让上层按无效处理。
+    这里刻意用一个低于稳态相电流（37.5 A）的安全界来触发，而不是去找一组"会跑飞
+    的参数"——因为那样的参数不存在，见下一条测试。测的是判据机制本身：事件是否
+    生效、状态是否被置为 `diverged`、是否给出原因、以及是否真的提前终止而非跑完全程。
     """
-    run = _run(spec, EVALUATION, 1000.0, 1e-10)
+    run = simulate_averaged(
+        spec,
+        EVALUATION,
+        rcomp_ohm=BASELINE[0],
+        ccomp_f=BASELINE[1],
+        stop_time_s=TEST_STOP_TIME_S,
+        rel_tol=1e-4,
+        guard_vout_abs_max=GUARD_VOUT,
+        guard_iphase_abs_max=30.0,  # 低于稳态均流 37.5 A，必然触发
+    )
 
     assert run.status == "diverged"
     assert run.solver_message
+    # 提前退出：采样点数应显著少于跑完全程
+    assert run.n_samples < int(TEST_STOP_TIME_S / 0.2e-6)
+
+
+def test_current_limit_keeps_the_loop_bounded_across_the_whole_domain(spec) -> None:
+    """整个设计域内没有一点触发发散判据，连远超域上限的增益也不会。
+
+    原因是电流指令限幅（`i_limit_a`）与抗积分饱和共同作用：增益再高，电流指令也被
+    钳在限幅值上，环路退化为有界的开关式行为而非无界发散。限幅本来就是保护功能，
+    这是它该有的效果。
+
+    这件事对搜索有实际影响，值得钉住：可行性完全由硬约束判定决定，而不是靠候选
+    "跑飞"来淘汰。于是搜索器面对的是一片连续可评估的地形，而不是散布着大片
+    "无效"空洞的地图——发散判据在本模型里的角色是数值安全网，不是筛选手段。
+    """
+    corners = [(1.0e3, 1.0e-10), (1.0e3, 1.0e-8), (1.0e5, 1.0e-10), (1.0e5, 1.0e-8)]
+    beyond_domain = [(1.0e7, 1.0e-10)]  # 域上限的 100 倍
+
+    for rcomp, ccomp in corners + beyond_domain:
+        run = _run(spec, EVALUATION, rcomp, ccomp)
+        assert run.status == "ok", (
+            f"({rcomp:.0e}, {ccomp:.0e}) 意外非 ok: {run.status} {run.solver_message}"
+        )
+        assert np.all(np.isfinite(run.vout_v))
 
 
 def test_phase_current_stays_within_guard_when_status_is_ok(spec) -> None:

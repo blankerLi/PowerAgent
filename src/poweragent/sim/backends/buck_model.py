@@ -37,17 +37,24 @@
 
     iL_cmd = clip(vcomp / Ri, 0, i_limit)
 
-电流指令先经过 PWM 的采样延迟，再驱动电流内环。PWM 每个开关周期只更新一次，
-等效于零阶保持，平均延迟为半个开关周期 Td = 0.5/fsw，用一阶滞后近似：
+电流内环用单个一阶滞后概括，时间常数就是采样延迟：
 
-    Td * d(iL_cmd_delayed)/dt = iL_cmd - iL_cmd_delayed
-    d(iL)/dt = (iL_cmd_delayed - iL) * 2*pi*f_ci
+    Td * d(iL)/dt = iL_cmd - iL,   Td = 0.5 / (N * fsw)
 
-**采样延迟这一项不能省。** 它是唯一惩罚「穿越频率逼近开关频率」的物理机制，在 fc
-处贡献 atan(2*pi*fc*Td) 的相位滞后。去掉它，输出电容 ESR 零点会在高频提供大量
-相位提升，使模型得出「补偿器增益越大越好」的结论——而真实电路在 fc 超过约
-fsw/10 之后会因采样效应开始振荡。缺这一项，相位裕量约束形同虚设，优化问题退化
-成「Rcomp 取域上限」。
+**这一项不能省，也不该被拆成两项。** 峰值电流模式的电流内环逐周期精确跟踪指令，
+唯一实质性的动态是采样保持：指令每有效开关周期才更新一次。N 相载波错开 360/N 度、
+各相轮流采样，有效采样率是单相开关频率的 N 倍，故 Td = 0.5/(N*fsw)。其等效带宽
+1/(2*pi*Td) = N*fsw/pi，与 Ridley 采样保持模型给出的极点位置一致。
+
+它是唯一惩罚「穿越频率逼近开关频率」的物理机制，在 fc 处贡献 atan(2*pi*fc*Td) 的
+相位滞后。去掉它，输出电容 ESR 零点会在高频提供大量相位提升，使模型得出「补偿器
+增益越大越好」的结论，相位裕量约束形同虚设，寻优退化成「Rcomp 取域上限」。
+
+早先的版本在这个滞后之外还串了一个独立的「电流内环带宽」极点（取 fsw/5），那是
+错的：两者表达的是同一个采样效应，串两遍等于把它算了两次，而且 fsw/5 这个量级
+比真实极点低了一个数量级，使平均模型系统性偏悲观——负载阶跃下冲与开关模型相差
+最多 20%。低保真模型偏悲观并不"安全"：筛选层会据此误杀实际可行的候选，而被误杀
+的候选永远不会进入评价层得到纠正。
 
 选一阶滞后而非 Pade 全通近似，是因为后者在时域对阶跃输入会产生非物理的反向
 预冲；一阶滞后的相位在 fc < 1/(2*pi*Td) 范围内与真延迟接近，且幅值多一点衰减
@@ -57,7 +64,7 @@ fsw/10 之后会因采样效应开始振荡。缺这一项，相位裕量约束�
 
     C * d(vc)/dt = iL - iload
 
-由此外环开环传递函数为「补偿器 × 1/Ri × 采样延迟 × 电流内环 × 1/(sC)」，穿越频率
+由此外环开环传递函数为「补偿器 × 1/Ri × 采样滞后 × 1/(sC)」，穿越频率
 
     fc ≈ gm * Rcomp / (Ri * 2*pi*Cout)
 
@@ -77,11 +84,14 @@ fsw/10 之后会因采样效应开始振荡。缺这一项，相位裕量约束�
 --------------
 `vin_v` 与 `temp_c` 不是装饰性字段：
 
-- **输入电压**：电感电流上升斜率正比于 (Vin - Vout)/L，因此电流内环带宽随输入
-  电压下降而降低。低输入电压工况的相位裕量更紧。
-- **温度**：电流检测采用电感 DCR 检测，铜电阻随温度上升（0.393%/K 是物理常数），
-  检测增益 Ri 变大、外环穿越频率下降，高温工况的瞬态更差。同时 MOSFET 导通电阻
-  也上升（取 0.5%/K 的典型量级），加大导通损耗与压降。
+- **温度**：主要因素。电流检测采用电感 DCR 检测，铜电阻随温度上升（0.393%/K 是
+  物理常数），检测增益 Ri 变大、外环穿越频率下降，高温工况的瞬态更差。同时
+  MOSFET 导通电阻也上升（取 0.5%/K 的典型量级），加大导通损耗与压降。
+- **输入电压**：通过两条路径起作用，都不改变环路增益。一是决定占空比、进而决定
+  开关模型的相电流纹波幅值；二是决定电感电流的最大可达变化率
+  `N*(Vin - Vout)/L`，评价工况下约 267 A/µs，相对 200 A/µs 的负载斜率只有 1.3 倍
+  余量。所以低输入电压确实恶化瞬态，但机理与温度不同：温度压低环路增益，
+  输入电压压缩大信号追赶余量。
 """
 
 from __future__ import annotations
@@ -89,8 +99,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
+import numpy as np
 import yaml
 
 __all__ = [
@@ -99,7 +110,40 @@ __all__ = [
     "OperatingCondition",
     "steady_state",
     "current_command",
+    "TimeDomainRun",
+    "SimStatus",
+    "STEP_TRIGGER_FRACTION",
+    "ramp_duration_s",
 ]
+
+# 阶跃触发时刻占总仿真时长的比例。取 10%：前面留出足以让 `obs.vout_min/max`
+# 看到一段正常电压，后面留出 90% 供瞬态恢复与稳态重建。两个求解器共用同一比例，
+# 否则平均模型与开关模型的波形在时间轴上对不齐，双模型一致性核对无从进行。
+STEP_TRIGGER_FRACTION = 0.10
+
+SimStatus = Literal["ok", "diverged", "solver_error"]
+
+
+@dataclass(frozen=True, slots=True)
+class TimeDomainRun:
+    """一次时域仿真的输出，两个求解器共用这一种形状。
+
+    `iphase_a` 形状为 `(n_time, n_phase)`——`eval/metrics.py` 的
+    `phase_peak_current` 按这个二维形状同时做跨相与跨时间的聚合。平均模型下
+    各相均流，每一列相同；开关模型下各列因相位交错而不同。
+    """
+
+    time_s: np.ndarray
+    vout_v: np.ndarray
+    iout_a: np.ndarray
+    iphase_a: np.ndarray
+    step_trigger_s: float
+    status: SimStatus
+    solver_message: str = ""
+
+    @property
+    def n_samples(self) -> int:
+        return int(self.time_s.size)
 
 # 铜的电阻温度系数（1/K）。电感 DCR 是铜绕组，DCR 检测的增益随它变化。
 _COPPER_TEMPCO_PER_K = 0.00393
@@ -136,7 +180,6 @@ class BuckSpec:
     # 控制
     gm_s: float
     ri_nom_ohm: float
-    current_loop_bw_nom_hz: float
     i_limit_a: float
 
     # 调制器（开关模型使用；平均模型只用占空比钳位做限幅自检）
@@ -160,12 +203,23 @@ class BuckSpec:
 
     @property
     def modulator_delay_s(self) -> float:
-        """PWM 零阶保持的等效平均延迟 = 半个开关周期（见模块 docstring）。
+        """PWM 零阶保持的等效平均延迟 = 半个**有效**开关周期。
 
-        不做成配置项：它由开关频率唯一决定，是 PWM 采样机制的后果而非可调设计
-        参数。允许它被单独配置只会引入「与 fsw 不一致」这一种新的出错方式。
+        分母是 `n_phase * fsw` 而不是 `fsw`：N 相载波彼此错开 360/N 度，各相轮流
+        采样并更新电流指令，因此环路看到的有效采样率是单相开关频率的 N 倍，
+        等效延迟相应缩短为 `0.5 / (N * fsw)`。
+
+        这一点是拿开关模型当真值校准出来的，不是推导出来就算了。用 `0.5/fsw`
+        时平均模型与开关模型的负载阶跃下冲相差最多 20%，平均模型系统性偏悲观；
+        改为有效开关周期后偏差回到个位数百分比。低保真模型偏悲观并非"安全"——
+        筛选层会据此误杀实际可行的候选，而被误杀的候选永远不会进入评价层得到
+        纠正，分层执行反而成了漏斗上的破洞。
+
+        不做成配置项：它由相数与开关频率唯一决定，是 PWM 采样机制的后果而非可调
+        设计参数。允许它被单独配置只会引入「与 fsw/n_phase 不一致」这种新的
+        出错方式。
         """
-        return 0.5 / self.fsw_hz
+        return 0.5 / (self.n_phase * self.fsw_hz)
 
     def sense_gain_ohm(self, temp_c: float) -> float:
         """电流检测增益，含温度修正。
@@ -188,16 +242,27 @@ class BuckSpec:
         rds = self.rds_on_ohm * (1.0 + _MOSFET_TEMPCO_PER_K * delta)
         return dcr + rds
 
-    def current_loop_bw_hz(self, vin_v: float) -> float:
-        """电流内环带宽，随输入电压修正。
+    def max_current_slew_a_per_s(self, vin_v: float) -> float:
+        """全部相同时导通时电感电流的最大可达变化率 N*(Vin - Vout)/L。
 
-        电感电流的可达变化率正比于 (Vin - Vout)/L，输入电压越低、内环越慢。
-        以标称输入电压下的带宽为基准按该比例缩放，使低输入电压工况的相位裕量
-        更紧——这是评价工况取 Vin 下限的物理理由。
+        这是大信号限制而非小信号带宽：负载阶跃斜率超过它时电流物理上追不上，
+        下冲转由输出电容放电主导。
+
+        本规格下的实际余量不大：标称 12 V 时约 299 A/µs，评价工况 10.8 V 时约
+        267 A/µs，而评价场景的负载斜率是 200 A/µs——只快 1.3 倍。因此输入电压
+        对瞬态**有**实际影响，只是不像温度那样通过改变环路增益起作用，而是通过
+        压缩这个大信号余量起作用。
         """
-        headroom = max(vin_v - self.vout_nom_v, 1e-9)
-        headroom_nom = self.vin_nom_v - self.vout_nom_v
-        return self.current_loop_bw_nom_hz * headroom / headroom_nom
+        return self.n_phase * max(vin_v - self.vout_nom_v, 0.0) / self.l_per_phase_h
+
+    def phase_current_ripple_a(self, vin_v: float) -> float:
+        """稳态相电流纹波峰峰值 (Vin - Vout)·D·Tsw/L，D = Vout/Vin。
+
+        只在开关模型里真实出现（平均模型按定义不含纹波），这里给出解析值供测试
+        与文档核对。它是相电流峰值高于均流值的主要原因。
+        """
+        duty = self.vout_nom_v / vin_v
+        return (vin_v - self.vout_nom_v) * duty * self.switching_period_s() / self.l_per_phase_h
 
     def crossover_hz(self, *, rcomp_ohm: float, temp_c: float) -> float:
         """电压外环穿越频率的解析估计 fc ≈ gm*Rcomp/(Ri*2*pi*Cout)。
@@ -240,7 +305,6 @@ def load_buck_spec(path: str | Path) -> BuckSpec:
         iout_nom_a=float(_require(point, "iout_nom_a", "operating_point")),
         gm_s=float(_require(control, "gm_s", "control")),
         ri_nom_ohm=float(_require(control, "ri_ohm", "control")),
-        current_loop_bw_nom_hz=float(_require(control, "current_loop_bw_hz", "control")),
         i_limit_a=float(_require(control, "i_limit_a", "control")),
         duty_min=float(_require(modulator, "duty_min", "modulator")),
         duty_max=float(_require(modulator, "duty_max", "modulator")),
@@ -279,6 +343,14 @@ class OperatingCondition:
         return max(self.load_start_a - ramp, self.load_end_a)
 
 
+def ramp_duration_s(condition: OperatingCondition) -> float:
+    """负载电流从起点变到终点所需时间；`slew` 为零或无阶跃时返回 0。"""
+    delta = abs(condition.load_end_a - condition.load_start_a)
+    if delta == 0.0 or condition.slew_a_per_us <= 0.0:
+        return 0.0
+    return delta / (condition.slew_a_per_us * 1e6)
+
+
 def current_command(vcomp: float, spec: BuckSpec, ri_ohm: float) -> tuple[float, bool, bool]:
     """把补偿器输出电压换算为总电流指令，并施加限幅。
 
@@ -303,11 +375,11 @@ def steady_state(
 
     - 补偿器含积分项 ⟹ 稳态误差为零 ⟹ `vout = vout_nom`
     - 稳态下电容电流为零 ⟹ `iL = iload` ⟹ ESR 上无压降 ⟹ `vc = vout_nom`
-    - 电流内环与采样延迟稳态均无差 ⟹ `iL_cmd = iL_cmd_delayed = iL`
-      ⟹ `vcomp = iL * Ri`
+    - 电流内环稳态无差 ⟹ `iL_cmd = iL` ⟹ `vcomp = iL * Ri`
     - `verr = 0` ⟹ Rcomp 上无压降 ⟹ `xc = vcomp`
 
-    返回的第四个分量是延迟环节的状态，稳态下等于 `iL`。
+    返回的第四个分量与 `iL` 相等，供需要一个独立电流状态初值的求解器使用
+    （开关模型的相电流均分即由它得出）。
 
     最后一条也说明稳态解与两个设计变量无关：搜索改变的是阶跃响应的形状，不是
     阶跃前的静态工作点。

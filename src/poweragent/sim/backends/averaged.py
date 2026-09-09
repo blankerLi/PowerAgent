@@ -20,48 +20,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
-
 import numpy as np
 from scipy.integrate import solve_ivp
 
 from poweragent.sim.backends.buck_model import (
+    STEP_TRIGGER_FRACTION,
     BuckSpec,
     OperatingCondition,
+    SimStatus,
+    TimeDomainRun,
     current_command,
+    ramp_duration_s,
     steady_state,
 )
 
-__all__ = ["TimeDomainRun", "simulate_averaged", "STEP_TRIGGER_FRACTION"]
-
-# 阶跃触发时刻占总仿真时长的比例。取 10%：前面留出足以让 `obs.vout_min/max`
-# 看到一段正常电压，后面留出 90% 供瞬态恢复与稳态重建。
-STEP_TRIGGER_FRACTION = 0.10
-
-SimStatus = Literal["ok", "diverged", "solver_error"]
-
-
-@dataclass(frozen=True, slots=True)
-class TimeDomainRun:
-    """一次时域仿真的输出，与具体后端无关。
-
-    `iphase_a` 形状为 `(n_time, n_phase)`——`eval/metrics.py` 的
-    `phase_peak_current` 按这个二维形状同时做跨相与跨时间的聚合。平均模型下
-    各相均流，每一列相同；开关模型下各列因相位交错而不同。
-    """
-
-    time_s: np.ndarray
-    vout_v: np.ndarray
-    iout_a: np.ndarray
-    iphase_a: np.ndarray
-    step_trigger_s: float
-    status: SimStatus
-    solver_message: str = ""
-
-    @property
-    def n_samples(self) -> int:
-        return int(self.time_s.size)
+__all__ = ["simulate_averaged"]
 
 
 def _output_grid(stop_time_s: float, output_dt_s: float) -> np.ndarray:
@@ -73,14 +46,6 @@ def _output_grid(stop_time_s: float, output_dt_s: float) -> np.ndarray:
     """
     n = int(round(stop_time_s / output_dt_s)) + 1
     return np.linspace(0.0, stop_time_s, n)
-
-
-def _ramp_duration_s(condition: OperatingCondition) -> float:
-    """负载电流从起点变到终点所需时间；`slew` 为零或无阶跃时返回 0。"""
-    delta = abs(condition.load_end_a - condition.load_start_a)
-    if delta == 0.0 or condition.slew_a_per_us <= 0.0:
-        return 0.0
-    return delta / (condition.slew_a_per_us * 1e6)
 
 
 def simulate_averaged(
@@ -108,18 +73,17 @@ def simulate_averaged(
     esr = spec.cout_esr_ohm
     gm = spec.gm_s
     ri = spec.sense_gain_ohm(condition.temp_c)
-    omega_ci = 2.0 * np.pi * spec.current_loop_bw_hz(condition.vin_v)
     t_delay = spec.modulator_delay_s
 
     t_step = STEP_TRIGGER_FRACTION * stop_time_s
-    t_ramp = _ramp_duration_s(condition)
+    t_ramp = ramp_duration_s(condition)
 
     def vout_of(t: float, y: np.ndarray) -> float:
         il, vc = y[0], y[1]
         return float(vc + esr * (il - condition.load_current_a(t, t_step)))
 
     def rhs(t: float, y: np.ndarray) -> np.ndarray:
-        il, vc, xc, il_cmd_delayed = y
+        il, vc, xc = y
         iload = condition.load_current_a(t, t_step)
         vout = vc + esr * (il - iload)
         verr = vref - vout
@@ -132,11 +96,10 @@ def simulate_averaged(
         else:
             d_xc = gm * verr / ccomp_f
 
-        # 电流内环跟踪的是经 PWM 采样延迟后的指令，不是补偿器当前输出。
-        d_il = (il_cmd_delayed - il) * omega_ci
+        # 电流内环逐周期精确跟踪指令，唯一动态是采样保持延迟 Td。
+        d_il = (il_cmd - il) / t_delay
         d_vc = (il - iload) / cout
-        d_cmd_delayed = (il_cmd - il_cmd_delayed) / t_delay
-        return np.array([d_il, d_vc, d_xc, d_cmd_delayed])
+        return np.array([d_il, d_vc, d_xc])
 
     def event_vout_diverged(t: float, y: np.ndarray) -> float:
         return guard_vout_abs_max - abs(vout_of(t, y))
@@ -150,7 +113,9 @@ def simulate_averaged(
     event_iphase_diverged.direction = -1.0  # type: ignore[attr-defined]
 
     grid = _output_grid(stop_time_s, output_dt_s)
-    y_steady = np.asarray(steady_state(spec, condition), dtype=float)
+    # steady_state() 返回四个分量，第四个是给开关模型分相用的电流初值副本；
+    # 平均模型的状态向量只有 (iL, vc, xc) 三项。
+    y_steady = np.asarray(steady_state(spec, condition)[:3], dtype=float)
 
     # ---- 第一段：阶跃前，解析稳态，不积分 ----
     pre_mask = grid < t_step
@@ -164,8 +129,9 @@ def simulate_averaged(
     y0 = y_steady.copy()
     # 各状态量级差异达 3 个数量级（电流 ~1e2 A、电压 ~1e0 V、积分状态 ~1e-1 V），
     # 统一的绝对容差会让某个状态被过度或不足约束，故按量级分别给出。
-    i_scale = rel_tol * max(spec.iout_nom_a, 1.0)
-    atol = np.array([i_scale, rel_tol * vref, rel_tol * vref, i_scale])
+    atol = np.array(
+        [rel_tol * max(spec.iout_nom_a, 1.0), rel_tol * vref, rel_tol * vref]
+    )
 
     status: SimStatus = "ok"
     message = ""
