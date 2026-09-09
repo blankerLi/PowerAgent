@@ -1,0 +1,114 @@
+# =============================================================================
+# metrics.yaml —— 指标定义、约束支撑观测量、裕量提取与目标函数
+#
+# Owner：指标 Owner
+# 追溯: design.md §4.3；requirements.md R3.9, R13.5(不适用于本文件字段，仅关键器件参数隔离);
+#       tasks.md 5.7 / 5.1
+#
+# compare_tolerance 的口径：这些是「同一候选重复评估时，两次结果被判为一致的容差」，
+# 用于复现性回归门禁，不是硬约束阈值（硬约束在 constraints.yaml）。取值按各指标的
+# 数值分辨率量级给出，不按"希望做到多好"给出。
+# =============================================================================
+
+# 「六项指标」= output_ripple, overshoot, undershoot, settling_time,
+# phase_peak_current, {phase_margin, gain_margin}（第六项一项两数值，落成两个 metric_id）
+# efficiency 与 sensitivity 默认不激活（二维阶段不含）
+active_metrics: [output_ripple, overshoot, undershoot, settling_time, phase_peak_current, phase_margin, gain_margin]
+
+metrics:
+  settling_time:
+    signal: Vout                          # source: model.yaml io_contract.output_signals 中的信号名（非物理量）
+    definition: 负载阶跃后回到误差带内并保持的所需时间
+    window: [step_trigger, step_trigger_plus_500us]
+    band: 0.01_of_vout_target             # vout_target 取 model.yaml io_contract.vout_target_v = 0.8 V ⟹ ±8 mV
+    filter: none
+    unit: us
+    # invalid_if 取值域封闭为下列 8 个具名谓词枚举的子列表（不是表达式，见 eval/metrics.py INVALID_PREDICATES）：
+    #   waveform_unreadable / signal_missing / window_empty / waveform_not_converged /
+    #   vout_out_of_guard / no_step_detected / not_settled_within_window / extraction_failed
+    invalid_if: [waveform_unreadable, signal_missing, window_empty,
+                 waveform_not_converged, vout_out_of_guard,
+                 no_step_detected, not_settled_within_window]
+    compare_tolerance: { absolute: 0.5, relative: 0.02 }   # unit: us · 0.5 µs ≈ 采样分辨率量级
+    threshold_source: approval_record
+
+  output_ripple:
+    signal: Vout
+    window: [steady_start, steady_end]
+    filter: "2.0e6"                       # unit: Hz(带宽) · 2 MHz ≈ 4 × fsw，保留开关纹波、
+                                          # 滤除数值求解噪声。字符串形式：schema 的 filter 字段为
+                                          # str，取 "none" 或可解析为浮点的带宽值
+    unit: V
+    invalid_if: [waveform_unreadable, signal_missing, window_empty, waveform_not_converged, vout_out_of_guard]
+    compare_tolerance: { absolute: 1.0e-4, relative: 0.02 }   # unit: V · 0.1 mV
+    threshold_source: approval_record
+
+  overshoot:
+    signal: Vout
+    window: [step_trigger, step_trigger_plus_500us]
+    filter: none
+    unit: V
+    invalid_if: [waveform_unreadable, signal_missing, window_empty, waveform_not_converged, vout_out_of_guard, no_step_detected]
+    compare_tolerance: { absolute: 1.0e-4, relative: 0.02 }   # unit: V · 0.1 mV
+    threshold_source: approval_record
+
+  undershoot:
+    signal: Vout
+    window: [step_trigger, step_trigger_plus_500us]
+    filter: none
+    unit: V
+    invalid_if: [waveform_unreadable, signal_missing, window_empty, waveform_not_converged, vout_out_of_guard, no_step_detected]
+    compare_tolerance: { absolute: 1.0e-4, relative: 0.02 }   # unit: V · 0.1 mV
+    threshold_source: approval_record
+
+  phase_peak_current:
+    signal: Iphase
+    window: [sim_start, sim_end]
+    filter: none
+    unit: A
+    aggregation: max_over_phases
+    invalid_if: [waveform_unreadable, signal_missing, window_empty, waveform_not_converged]
+    compare_tolerance: { absolute: 0.1, relative: 0.02 }   # unit: A
+    threshold_source: approval_record
+
+  phase_margin:
+    source: frequency_response
+    unit: deg
+    invalid_if: [extraction_failed]
+    compare_tolerance: { absolute: 1.0 }   # unit: deg
+    threshold_source: approval_record
+
+  gain_margin:
+    source: frequency_response
+    unit: dB
+    invalid_if: [extraction_failed]
+    compare_tolerance: { absolute: 0.5 }   # unit: dB
+    threshold_source: approval_record
+
+# 硬约束的支撑观测量，不是项目指标：不进 active_metrics、不进 objective、
+# 不参与 CI 回归的指标断言、不计入「六项指标」；恰两项。
+constraint_observables:
+  obs.vout_min: { signal: Vout, window: [sim_start, sim_end], aggregation: min, unit: V }
+  obs.vout_max: { signal: Vout, window: [sim_start, sim_end], aggregation: max, unit: V }
+
+margin_extraction:                        # 六项全部必填、不留占位
+  primary_method: linear_analysis_on_averaged   # 平均模型线性化求开环 Bode，取 allmargin
+  cross_check_method: manual_bode_reference     # 独立方法：按 Type-II 补偿 + 功率级双极点的
+                                                # 解析传递函数手算 Bode，与主方法比对
+  cross_check_tolerance: { phase_deg: 3.0, gain_db: 1.0 }   # 两法一致判据
+  cross_check_record:                     # 开发期一次性核对落点，preflight 断言其存在且内容 sha256 与本字段一致
+    path: artifacts/margin_cross_check.json   # 固定落点，不按 task_id 分目录（design.md §4.3）
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    # ^ 待 D3 交叉核对产出后替换为实际产物摘要。在此之前 preflight 的
+    #   check_margin_extraction_ready() 会拒绝放行——这是有意的：不允许用一份
+    #   伪造的核对记录通过门禁。门禁挡住说明它在工作。
+  extra_engine_starts_per_candidate: 1    # unit: 次(int) · 裕量提取额外一次仿真调用，计入预算
+
+objective:
+  primary: { metric_id: settling_time, aggregation: max_over_completed_evaluation_set, direction: minimize }
+  tie_tolerance: 0.5                      # unit: us · 恢复时间差在 0.5 µs 内视为并列，
+                                          # 转由 secondary_lexicographic 的相位裕量决胜
+  secondary_lexicographic:                # 未激活项自动跳过（efficiency / sensitivity 默认不激活）
+    - { metric_id: phase_margin, direction: maximize }
+    - { metric_id: efficiency,   direction: maximize }
+    - { metric_id: sensitivity,  direction: minimize }

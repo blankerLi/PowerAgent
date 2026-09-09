@@ -1,0 +1,68 @@
+# =============================================================================
+# task_template.yaml —— 单个寻优任务定义模板
+#
+# Owner：使用者（工程师，新建任务时复制本模板并填写待填字段）
+# 全部 `<...>` 占位字段为「仍需 M0 填写的物理数值」（见 requirements.md 文末表格
+# 与 design.md §17.3），由 Owner 在 M0 填写；程序（config.loader）不推断默认物理值，
+# 缺失或仍为 `<...>` 占位形式即报 `config_incomplete: <字段路径>`。
+# 追溯: design.md §4.1；requirements.md R3.9；tasks.md 5.7 / 5.1
+# =============================================================================
+
+task_id: "<...>"                          # string · 无单位 · 同一 store 内唯一 · source: 使用者自定（任务命名）
+
+simulation_only: true                     # bool · 验收轨道开关；true=PoC轨、false=工程轨
+                                          # source: P-3 探针判定（G-P-1/G-M2-1），此处默认 PoC 轨作为安全起点
+
+objective_target:                         # 可选节；给出则参与 controller.stop 的 target_reached 判定
+  target_value: "<...>"                   # unit: 随 metrics.yaml objective.primary 指标单位（如 us）
+                                          # range: 与该指标的物理量域一致
+                                          # source: 使用者任务目标（比较为严格 value <= target_value，不套 tie_tolerance）
+
+budget:
+  max_engine_starts: "<...>"              # unit: 次（真实 Simulink 启动数，预算计量单位）
+                                          # range: 正整数 · source: 使用者/技术负责人 预算审批
+  max_wallclock_hours: "<...>"            # unit: h · range: > 0 · source: 使用者/技术负责人 预算审批
+  max_attempts_per_scenario: 2            # unit: 次 · 每候选每场景最大 attempt 数（2=最多重试1次）
+                                          # source: 已给定默认值，无需 M0 填写（G-M0-1 门禁块 / design.md §4.1）
+  max_llm_repair_rounds: 2                # unit: 轮 · range: 0 <= v <= 5（config.schema 强制）
+                                          # source: 已给定默认值，无需 M0 填写（design.md §4.1）
+
+llm:
+  timeout_s: 120                          # unit: s · 单次 LLM 调用超时
+                                          # source: 已给定默认值，无需 M0 填写（G-M0-1 门禁块）
+  max_network_retries: 2                  # unit: 次 · 网络类失败指数退避重试上限；不计入 max_llm_repair_rounds
+                                          # source: 已给定默认值，无需 M0 填写（G-M0-1 门禁块）
+
+stop:
+  no_improvement_rounds: "<...>"          # unit: 轮 · range: 正整数 · source: 使用者停止策略
+  stop_on_first_feasible: false           # bool · 默认 false：出现首个可行候选后继续寻优
+                                          # source: 已裁定的工程默认值（design.md §17 Q4），非物理量
+
+scenarios:                                # 显式行，禁止笛卡尔积；程序不得由这些行自动展开组合
+  - scenario_id: scr_nom                  # string · 同任务内唯一 · source: 使用者场景设计
+    tier: screening                       # enum {screening, evaluation, robustness}
+    model_variant: averaged                # enum {switching, averaged}
+    vin_v: "<...>"                         # unit: V · range: 落在电气工作域内 · source: 使用者/电源设计
+    temp_c: "<...>"                        # unit: degC · source: 使用者/电源设计
+    load_start_a: "<...>"                  # unit: A · source: 使用者/电源设计
+    load_end_a: "<...>"                    # unit: A · source: 使用者/电源设计
+    slew_a_per_us: "<...>"                 # unit: A/us · source: 使用者/电源设计
+    require_margin: false                  # bool · 该行是否需采集稳定性裕量（PM/GM）
+
+  - scenario_id: eval_vin_min_step_max
+    tier: evaluation
+    model_variant: switching
+    vin_v: "<...>"
+    temp_c: "<...>"
+    load_start_a: "<...>"
+    load_end_a: "<...>"
+    slew_a_per_us: "<...>"
+    require_margin: true
+
+robustness:                                # 仅 M6 对 Top 候选生效（robustness.sweep）
+  component_tolerance:
+    - parameter: cout_c                     # string · 须与 constraints.yaml design_space.device_limits 键一致
+      relative_range: ["<...>", "<...>"]    # unit: 无量纲比例 [下限, 上限]（如 [-0.1, 0.1]）
+                                            # source: 使用者/电源设计 器件容差批准值
+  include_calibration_uncertainty: true      # bool · PoC 轨（simulation_only=true）由 robustness.sweep 自动按缺失维度跳过并在报告说明
+                                            # source: 已裁定的工程默认值（design.md §4.1），非物理量

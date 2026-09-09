@@ -1,0 +1,62 @@
+# =============================================================================
+# task_comp_tuning_v1.yaml —— 寻优任务：Type-II 补偿网络整定
+#
+# 由 configs/task_template.yaml 复制填写而来（模板保留原样，含占位符，供新建任务用）。
+# 命令：poweragent run configs/task_comp_tuning_v1.yaml
+# 追溯: design.md §4.1；requirements.md R3.9；tasks.md 5.7 / 5.1
+# =============================================================================
+
+task_id: "comp_tuning_v1"                 # string · 同一 store 内唯一
+
+simulation_only: true                     # bool · 验收轨道开关；true=PoC轨、false=工程轨
+                                          # 本阶段无实测校准数据，取 PoC 轨作为安全起点：
+                                          # 报告会渲染 PoC 声明，不存在"可打板"的表述路径
+
+objective_target:                         # 给出则参与 controller.stop 的 target_reached 判定
+  target_value: 20.0                      # unit: us · 恢复时间目标；比较为严格 value <= target_value
+                                          # 依据：500 kHz 开关频率下带宽上限约 50 kHz，
+                                          # 对应可达恢复时间量级为数十 µs，20 µs 是有挑战但非不可达的目标
+
+budget:
+  max_engine_starts: 200                  # unit: 次 · 远小于 144 点 × 2 场景 = 288 次的全网格扫描，
+                                          # 搜索方法必须比穷举更省才有意义
+  max_wallclock_hours: 2.0                # unit: h
+  max_attempts_per_scenario: 2            # unit: 次 · 每候选每场景最大 attempt 数（2=最多重试1次）
+  max_llm_repair_rounds: 2                # unit: 轮 · schema 校验失败的回灌修复上限（0 <= v <= 5）
+
+llm:
+  timeout_s: 120                          # unit: s · 单次 LLM 调用超时
+  max_network_retries: 2                  # unit: 次 · 网络类失败指数退避重试上限；
+                                          # 与 max_llm_repair_rounds 分开计，两类失败不混淆
+
+stop:
+  no_improvement_rounds: 3                # unit: 轮 · 连续 3 轮无改善即停
+  stop_on_first_feasible: false           # bool · 出现首个可行候选后继续寻优（要的是好解，不是任一解）
+
+scenarios:                                # 显式行，禁止笛卡尔积；程序不得由这些行自动展开组合
+  - scenario_id: scr_nom                  # 标称工况，用平均模型做低成本筛选
+    tier: screening
+    model_variant: averaged
+    vin_v: 12.0                            # unit: V · 标称输入
+    temp_c: 25.0                           # unit: degC · 室温
+    load_start_a: 100.0                    # unit: A · 半载
+    load_end_a: 200.0                      # unit: A · 满载
+    slew_a_per_us: 100.0                   # unit: A/us · 100 A 阶跃在 1 µs 内完成
+    require_margin: false                  # 筛选层不采裕量：频域提取要额外仿真，先用时域筛掉差候选
+
+  - scenario_id: eval_vin_min_step_max     # 最恶劣工况：低输入 + 高温 + 更快阶跃
+    tier: evaluation
+    model_variant: switching               # 评价层用开关模型，含真实纹波
+    vin_v: 10.8                            # unit: V · 标称 12 V 的 -10%，占空比最大、裕量最紧
+    temp_c: 85.0                           # unit: degC · 高温
+    load_start_a: 100.0
+    load_end_a: 200.0
+    slew_a_per_us: 200.0                   # unit: A/us · 阶跃速率翻倍
+    require_margin: true                   # 此行采集 PM/GM，对应 phase_margin_min 只在 evaluation 层生效
+
+robustness:                                # 仅 M6 对 Top 候选生效；本阶段范围裁剪中已移除 robustness.sweep，
+                                           # 字段保留以满足配置契约（loader 要求非占位）
+  component_tolerance:
+    - parameter: cout_c                     # string · 须与 constraints.yaml design_space.device_limits 键一致
+      relative_range: [-0.2, 0.2]           # unit: 无量纲比例 · 输出电容 ±20%
+  include_calibration_uncertainty: true      # bool · PoC 轨下该维度缺失，由 robustness.sweep 自动跳过并在报告说明

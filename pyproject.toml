@@ -1,0 +1,43 @@
+[project]
+name = "poweragent"
+version = "0.2.0"
+description = "LLM 驱动的多相 Buck 供电模块参数寻优 Agent（确定性域 / LLM 域 / 仿真域三信任域架构）"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic==2.*",
+    "PyYAML==6.*",
+    "Jinja2==3.*",
+    "numpy==1.26.*",
+    "scipy==1.11.*",
+    "matplotlib==3.8.*",
+    "click==8.*",
+    "openai==1.*",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.*",
+    "pytest-cov==5.*",
+]
+
+[project.scripts]
+poweragent = "poweragent.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "-q"]
+markers = [
+    "unit: 纯函数确定性断言（配置校验、哈希、排序、校验器）",
+    "metric: 指标计算 —— 固定波形资产 + 人工公式核对",
+    "agent: LLM 域 —— 契约与失败路径，使用假 client，不发网络请求",
+    "integration: 单候选闭环 —— 使用 Python 仿真后端，无需 MATLAB",
+    "matlab: 需要 MATLAB + Simulink 许可证，CI 中跳过",
+    "live_llm: 需要 POWERAGENT_LLM_API_KEY，会真实发网络请求，默认跳过",
+]

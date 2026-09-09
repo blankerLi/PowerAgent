@@ -1,0 +1,46 @@
+# =============================================================================
+# buck4ph_averaged.yaml —— 4 相同步 Buck 的「平均模型」拓扑与工作点定义
+#
+# 这个文件是 model.yaml 中 model_package.averaged.entry 指向的模型入口，
+# 地位等同于 Simulink 后端里的 .slx：它定义**被仿真的对象是什么**，
+# 而求解器实现在 model_package.averaged.custom_libraries 指向的代码目录里。
+#
+# 因此本文件的内容进入依赖闭包哈希（sim/hashing.py）：改动任何一个数值都会
+# 改变 model_package_hash，从而触发冻结点校验失败——这是有意的，模型变了
+# 就不该沿用旧结论。
+#
+# 平均模型 = 开关周期平均，不含 PWM 开关纹波。用于 screening 层与频域裕量提取
+# （linearize + margin），比开关模型快 1~2 个数量级。
+# =============================================================================
+
+topology: buck_multiphase_synchronous
+model_variant: averaged
+
+power_stage:
+  n_phase: 4                    # 相数，交错 360/4 = 90 度
+  fsw_hz: 500.0e3               # 每相开关频率
+  l_per_phase_h: 150.0e-9       # 每相输出电感；等效电感 = L/N = 37.5 nH
+  cout_f: 2.0e-3                # 输出电容总容值
+  cout_esr_ohm: 0.5e-3          # 输出电容等效串联电阻；ESR 零点 ≈ 159 kHz
+  dcr_per_phase_ohm: 0.4e-3     # 电感直流电阻（导通损耗与阻尼来源）
+  rds_on_ohm: 1.2e-3            # 单管导通电阻（上下管取同值）
+
+# 功率级双极点 f0 = 1/(2*pi*sqrt(L/N * Cout)) ≈ 18.4 kHz
+
+operating_point:
+  vin_nom_v: 12.0
+  vout_nom_v: 0.8               # 与 model.yaml io_contract.vout_target_v 一致
+  iout_nom_a: 200.0
+
+control:
+  scheme: voltage_mode          # 电压模式 + Type-II 补偿
+  compensator: type_ii_gm       # 跨导误差放大器 + 串联 Rcomp/Ccomp 接 COMP 脚
+  gm_s: 2.0e-3                  # 误差放大器跨导，单位 S
+  vramp_v: 1.0                  # PWM 锯齿幅值，决定调制器增益 1/Vramp
+  # 补偿零点 fz = 1/(2*pi*Rcomp*Ccomp)，Rcomp/Ccomp 是本项目的两个设计变量，
+  # 由 sim 在运行时注入，不在本文件中固定。
+
+solver:
+  # MATLAB 后端用 model.yaml 的 solver.type（ode23tb）；Python 后端映射到
+  # 等价的隐式刚性求解器 scipy BDF。两者的容差取自 model.yaml solver 节。
+  python_method: BDF

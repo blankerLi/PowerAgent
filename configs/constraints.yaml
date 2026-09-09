@@ -1,0 +1,70 @@
+# =============================================================================
+# constraints.yaml —— 硬约束与设计空间
+#
+# Owner：电源设计
+# 追溯: design.md §4.4；requirements.md R3.9, R22.1/R22.2(device_limits 作为唯一权威来源);
+#       tasks.md 5.7 / 5.1
+#
+# 数值来源声明（诚实口径，勿在面试中夸大）：本阶段为仿真轨
+# （task.simulation_only=true），下列物理数值是自洽的设计假设，量级取自低压大电流
+# AI 芯片核心供电的常见区间，**没有绑定任何实测记录或具体 datasheet 页码**。
+# 因此结论的效力止于「在该假设电路上，搜索方法是否有效」，不构成选型或打板依据。
+# =============================================================================
+
+# ===== 本节变更需重新审批（M0 出口冻结） =====
+# 恰四条，不接受第五条；每条恰含 value / observable / sense({lower,upper}) / applies_to_tier 四字段
+hard_constraints:
+  vout_min:
+    value: 0.75                           # unit: V · 标称 0.8 V 下沉 6.25%，覆盖负载阶跃下冲全窗口
+    observable: obs.vout_min              # 取自 metrics.yaml constraint_observables
+    sense: lower                          # 值 >= value 判满足
+    applies_to_tier: [screening, evaluation]
+  vout_max:
+    value: 0.85                           # unit: V · 标称 0.8 V 上冲 6.25%，防卸载过压损伤负载
+    observable: obs.vout_max
+    sense: upper                          # 值 <= value 判满足
+    applies_to_tier: [screening, evaluation]
+  peak_current_max:
+    value: 75.0                           # unit: A · 200 A / 4 相 = 50 A 均值，留 1.5 倍峰值余量
+                                          # （含纹波与瞬态不均流）
+    observable: phase_peak_current
+    sense: upper
+    applies_to_tier: [screening, evaluation]
+  phase_margin_min:
+    value: 45.0                           # unit: deg · 经典稳定性判据；低于此值瞬态易出现振铃
+    observable: phase_margin
+    sense: lower
+    applies_to_tier: [evaluation]
+# =============================================================================
+
+design_space:                             # 变更频率高于硬约束节
+  variables:
+    rcomp:
+      unit: ohm
+      domain: [1000.0, 100000.0]           # unit: ohm · 1 kΩ ~ 100 kΩ，覆盖 Type-II 补偿常用区间
+      scale: log
+      ticks: { count: 12, spacing: log }   # 12 档等比，相邻比 = 100^(1/11) ≈ 1.5198
+    ccomp:
+      unit: F
+      domain: [1.0e-10, 1.0e-8]            # unit: F · 100 pF ~ 10 nF
+      scale: log
+      ticks: { count: 12, spacing: log }   # 12 档等比；与 rcomp 合成 12 × 12 = 144 点参考网格
+
+  novelty_min_ticks: 1.0                  # unit: 无量纲(档位距离) · 探索阶段最小档位距离
+                                          # Dense Grid 走 mode='grid' 跳过新颖度检查
+
+  tick_match_rel_tol: 1e-6                # unit: 无量纲相对容差 · 档位命中的相对容差
+                                          # 约束: 须严格小于 0.01 × (tick_ratio − 1) = 5.2e-3 ✓
+
+  device_limits:                          # 关键器件参数，唯一权威来源（design.md §4.4；R22.1/R22.2）
+                                          # 三项须与 models/buck4ph_*.yaml 的 power_stage 节逐项一致
+    cout_c:
+      value: 2.0e-3                       # unit: F · 2 mF 输出电容总容值
+      source: "仿真轨设计假设（未绑定 datasheet 或实测）；量级依据：低压大电流 VRM 输出电容常见总容值区间"
+    cout_esr:
+      value: 0.5e-3                       # unit: ohm · 0.5 mΩ 等效 ESR；ESR 零点 ≈ 159 kHz
+      source: "仿真轨设计假设（未绑定 datasheet 或实测）；量级依据：多颗低 ESR 聚合物/陶瓷电容并联后的等效值区间"
+    l_per_phase:
+      value: 150.0e-9                     # unit: H · 150 nH/相；等效电感 L/N = 37.5 nH，
+                                          # 与 Cout 构成 ≈ 18.4 kHz 功率级双极点
+      source: "仿真轨设计假设（未绑定 datasheet 或实测）；量级依据：500 kHz 多相 Buck 每相电感常见取值区间"
