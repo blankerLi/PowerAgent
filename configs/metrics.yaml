@@ -98,10 +98,11 @@ margin_extraction:                        # 六项全部必填、不留占位
   cross_check_tolerance: { phase_deg: 3.0, gain_db: 1.0 }   # 两法一致判据
   cross_check_record:                     # 开发期一次性核对落点，preflight 断言其存在且内容 sha256 与本字段一致
     path: artifacts/margin_cross_check.json   # 固定落点，不按 task_id 分目录（design.md §4.3）
-    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
-    # ^ 待 D3 交叉核对产出后替换为实际产物摘要。在此之前 preflight 的
-    #   check_margin_extraction_ready() 会拒绝放行——这是有意的：不允许用一份
-    #   伪造的核对记录通过门禁。门禁挡住说明它在工作。
+    sha256: "27c0d5a61e3cdef9596e9fbf71be450cb621d5fec49e01fb0709b7f2cd244ebc"
+    # ^ 由 scripts/margin_cross_check.py 产出。该记录内容是确定性的（不含时间戳、
+    #   数值固定小数位、经 canonical_json 规范化），因此重跑脚本得到相同哈希；
+    #   哈希若变化，含义是核对结论真的变了（模型或容差被改动），需要人来看。
+    #   四个核对点（工程基线、网格最优、低带宽、小 Ccomp）的两法偏差均为 0.0°/0.0 dB。
   extra_engine_starts_per_candidate: 1    # unit: 次(int) · 裕量提取额外一次仿真调用，计入预算
 
 objective:

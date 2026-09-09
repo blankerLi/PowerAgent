@@ -16,7 +16,11 @@ coverage.xml
 
 # 运行期产物（唯一事实源是 SQLite，产物可重建）
 runs/
-artifacts/
+artifacts/*
+# 例外：裕量交叉核对记录是开发期一次性产出的证据资产，不是可重建的运行期产物，
+# 且被 metrics.yaml 的 sha256 绑定、由 preflight 校验。不入库则任何人 clone 后
+# 都无法通过 check_margin_extraction_ready()。
+!artifacts/margin_cross_check.json
 *.db
 *.db-journal
 *.sqlite
