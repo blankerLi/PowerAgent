@@ -983,7 +983,7 @@ def run_tier(
 # - 目标：`metrics_cfg.objective.primary`（`metric_id`/`aggregation`/
 #   `direction`）+ `objective.tie_tolerance` + 可选的
 #   `task_cfg.objective_target.target_value`。
-# - 硬约束：`constraints_cfg.hard_constraints` 恰四条（R9.1 已锁定的四字段
+# - 硬约束：`constraints_cfg.hard_constraints` 恰五条（R9.1 已锁定的四字段
 #   形状），逐条打印 `value`/`observable`/`sense`/`applies_to_tier`。
 # - 参数范围与档位：`config.ticks.expand_all_ticks(constraints_cfg)`
 #   （任务 5.9 已落地的档位展开函数，与写入 prompt 的档位字面量是同一次
@@ -1362,8 +1362,9 @@ def _checkpoint1_summary(
     - 目标：`metrics_cfg.objective.primary`（`metric_id`/`aggregation`/
       `direction`）+ `objective.tie_tolerance`；`task_cfg.objective_target`
       非空时附加其 `target_value`（可选节，design.md §4.1）。
-    - 硬约束：`constraints_cfg.hard_constraints` 四条（`vout_min` /
-      `vout_max` / `peak_current_max` / `phase_margin_min`），每条含
+    - 硬约束：`constraints_cfg.hard_constraints` 五条（`vout_min` /
+      `vout_max` / `peak_current_max` / `phase_margin_min` /
+      `gain_margin_min`），每条含
       `value`/`observable`/`sense`/`applies_to_tier`。
     - 参数范围与档位：`config.ticks.expand_all_ticks(constraints_cfg)`
       展开后的档位文本，加 `design_space.variables.<name>` 的 `domain`/
