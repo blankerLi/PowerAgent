@@ -60,14 +60,15 @@ io_contract:
   initial_condition: steady_state_from_init_script   # 非物理量，固定取值
   vout_target_v: 0.8                       # unit: V · 标称输出电压；metrics.yaml settling_time.band
                                            # = 0.01_of_vout_target 引用此量 ⟹ 误差带 ±8 mV
-  divergence_guard:                       # MATLAB/Python 侧发散判据安全界，与 eval 评价阈值分离
+  divergence_guard:                       # 发散判据安全界，与 eval 评价阈值分离
     vout_abs_max: 1.7                      # unit: V · 取 hard_constraints.vout_max(0.85 V) 的 2 倍
-    iphase_abs_max: 150.0                  # unit: A · 取 hard_constraints.peak_current_max(75 A) 的 2 倍
+    iphase_abs_max: 110.0                  # unit: A · 取 hard_constraints.peak_current_max(55 A) 的 2 倍
 
 baseline:                                  # Engineering Baseline（M1 出口门禁 check_baseline_gate 消费）
-  parameters_si: { rcomp: 11000.0, ccomp: 2.3e-9 }   # unit: ohm / F · Type-II 补偿零点
-                                                      # fz = 1/(2π·Rc·Cc) ≈ 6.3 kHz，位于功率级双极点
-                                                      # (≈18.4 kHz) 之下提供相位提升；落在 domain 内
+  parameters_si: { rcomp: 12000.0, ccomp: 2.2e-9 }   # unit: ohm / F · 一个保守的工程整定：
+                                                      # 外环穿越频率 ≈ 26 kHz（约 fsw/19），
+                                                      # 相位裕量充裕但带宽偏低，负载阶跃恢复较慢。
+                                                      # 落在 domain 内、不命中档位（基线不要求命中）
   measured_evidence_ref: null              # path|null · 无实板记录：本阶段是仿真轨，结论不足以打板
 
 runtime:

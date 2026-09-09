@@ -8,8 +8,9 @@
 # 由此形成分层执行的成本梯度（design.md §8）：screening 层用平均模型快速筛除
 # 明显不可行的候选，只有通过筛选的候选才进入 evaluation 层的开关模型。
 #
-# 功率级与工作点必须与 buck4ph_averaged.yaml 逐项一致——两者是同一个电路的
-# 两种保真度，不是两个电路。不一致会让分层执行的筛除结论失去意义。
+# 功率级、工作点与控制参数必须与 buck4ph_averaged.yaml 逐项一致——两者是同一个
+# 电路的两种保真度，不是两个电路。不一致会让分层执行的筛除结论失去意义，
+# tests/unit/test_config_contract.py 对此有守护。
 # =============================================================================
 
 topology: buck_multiphase_synchronous
@@ -19,8 +20,8 @@ power_stage:
   n_phase: 4
   fsw_hz: 500.0e3
   l_per_phase_h: 150.0e-9
-  cout_f: 2.0e-3
-  cout_esr_ohm: 0.5e-3
+  cout_f: 6.0e-3
+  cout_esr_ohm: 0.15e-3
   dcr_per_phase_ohm: 0.4e-3
   rds_on_ohm: 1.2e-3
 
@@ -30,17 +31,19 @@ operating_point:
   iout_nom_a: 200.0
 
 control:
-  scheme: voltage_mode
+  scheme: current_mode
   compensator: type_ii_gm
-  gm_s: 2.0e-3
-  vramp_v: 1.0
+  gm_s: 200.0e-6
+  ri_ohm: 2.0e-3
+  current_loop_bw_hz: 100.0e3
+  i_limit_a: 300.0
 
 modulator:
-  # 平均模型中不存在的部分：显式 PWM 与相位交错
-  phase_shift_deg: 90.0         # 360 / n_phase
-  duty_min: 0.005               # 最小占空比钳位
-  duty_max: 0.95                # 最大占空比钳位
-  dead_time_s: 20.0e-9          # 上下管死区
+  # 平均模型中被平均掉的部分：显式 PWM 与相位交错
+  duty_min: 0.005
+  duty_max: 0.95
+  dead_time_s: 20.0e-9
+  phase_shift_deg: 90.0         # 360 / n_phase，四相交错使输出纹波频率为 4×fsw
 
 solver:
   python_method: BDF

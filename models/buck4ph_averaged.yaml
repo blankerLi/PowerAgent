@@ -3,14 +3,21 @@
 #
 # 这个文件是 model.yaml 中 model_package.averaged.entry 指向的模型入口，
 # 地位等同于 Simulink 后端里的 .slx：它定义**被仿真的对象是什么**，
-# 而求解器实现在 model_package.averaged.custom_libraries 指向的代码目录里。
+# 而求解器实现在 sim/backends/ 下（求解器不进依赖闭包，见 model.yaml 的说明）。
 #
 # 因此本文件的内容进入依赖闭包哈希（sim/hashing.py）：改动任何一个数值都会
 # 改变 model_package_hash，从而触发冻结点校验失败——这是有意的，模型变了
 # 就不该沿用旧结论。
 #
-# 平均模型 = 开关周期平均，不含 PWM 开关纹波。用于 screening 层与频域裕量提取
-# （linearize + margin），比开关模型快 1~2 个数量级。
+# 平均模型 = 开关周期平均，不含 PWM 开关纹波。用于 screening 层与频域裕量提取，
+# 比开关模型快 1~2 个数量级。
+#
+# 控制架构为**电流模式**：电流内环控制电感电流，电压外环由 Type-II 补偿器整定。
+# 这不是任意选择——低压大电流功率级的 LC 网络阻尼极小（Q ≈ 4），电压模式下双极点
+# 贡献 -180° 相位，单零点的 Type-II 补偿器无论怎么整定都拿不到 45° 相位裕量；
+# 要靠电容 ESR 零点补相位则需把 ESR 加到 mΩ 量级，而那会让负载阶跃的瞬时压降
+# 直接吃掉全部电压容限。电流内环把电感极点消掉、功率级降为一阶，Type-II 才够用。
+# 工业界的 AI 芯片供电模块同样如此。
 # =============================================================================
 
 topology: buck_multiphase_synchronous
@@ -19,13 +26,14 @@ model_variant: averaged
 power_stage:
   n_phase: 4                    # 相数，交错 360/4 = 90 度
   fsw_hz: 500.0e3               # 每相开关频率
-  l_per_phase_h: 150.0e-9       # 每相输出电感；等效电感 = L/N = 37.5 nH
-  cout_f: 2.0e-3                # 输出电容总容值
-  cout_esr_ohm: 0.5e-3          # 输出电容等效串联电阻；ESR 零点 ≈ 159 kHz
-  dcr_per_phase_ohm: 0.4e-3     # 电感直流电阻（导通损耗与阻尼来源）
+  l_per_phase_h: 150.0e-9       # 每相输出电感。电流模式下它落在电流内环内部，
+                                #   对电压外环的作用已由 current_loop_bw_hz 概括；
+                                #   开关模型用它计算相电流纹波
+  cout_f: 6.0e-3                # 输出电容总容值。负载阶跃下冲 ≈ ΔI·t_response/Cout，
+                                #   是决定瞬态性能的首要器件
+  cout_esr_ohm: 0.15e-3         # 输出电容等效串联电阻；贡献 ESR·ΔI 的瞬时压降
+  dcr_per_phase_ohm: 0.4e-3     # 电感直流电阻
   rds_on_ohm: 1.2e-3            # 单管导通电阻（上下管取同值）
-
-# 功率级双极点 f0 = 1/(2*pi*sqrt(L/N * Cout)) ≈ 18.4 kHz
 
 operating_point:
   vin_nom_v: 12.0
@@ -33,12 +41,27 @@ operating_point:
   iout_nom_a: 200.0
 
 control:
-  scheme: voltage_mode          # 电压模式 + Type-II 补偿
+  scheme: current_mode          # 电流内环 + 电压外环（见文件头说明）
   compensator: type_ii_gm       # 跨导误差放大器 + 串联 Rcomp/Ccomp 接 COMP 脚
-  gm_s: 2.0e-3                  # 误差放大器跨导，单位 S
-  vramp_v: 1.0                  # PWM 锯齿幅值，决定调制器增益 1/Vramp
-  # 补偿零点 fz = 1/(2*pi*Rcomp*Ccomp)，Rcomp/Ccomp 是本项目的两个设计变量，
-  # 由 sim 在运行时注入，不在本文件中固定。
+  gm_s: 200.0e-6                # 误差放大器跨导（S）。典型多相控制器为百 µS 量级
+  ri_ohm: 2.0e-3                # 电流检测增益（V/A）。采用电感 DCR 检测，因此该值
+                                #   随温度上升（铜电阻温度系数），使高温工况的
+                                #   外环穿越频率下降、瞬态变差
+  current_loop_bw_hz: 100.0e3   # 电流内环带宽，取 fsw/5。外环穿越频率接近它时
+                                #   相位裕量迅速恶化——这是搜索空间上界的物理来源
+  i_limit_a: 300.0              # 电流指令限幅（总电流）。保护功能，设在硬约束之上，
+                                #   使 peak_current_max 由动态过冲而非限流决定
+
+# 外环穿越频率 fc ≈ gm·Rcomp / (Ri·2π·Cout)，与 Rcomp 成正比。
+# 补偿零点 fz = 1/(2π·Rcomp·Ccomp)。Rcomp 与 Ccomp 是本项目的两个设计变量，
+# 由 sim 在运行时注入，不在本文件中固定。
+
+modulator:
+  duty_min: 0.005               # 最小占空比钳位
+  duty_max: 0.95                # 最大占空比钳位
+  dead_time_s: 20.0e-9          # 上下管死区
+  phase_shift_deg: 90.0         # 360 / n_phase。平均模型不用，列出以保持两个
+                                #   模型文件的字段一致
 
 solver:
   # MATLAB 后端用 model.yaml 的 solver.type（ode23tb）；Python 后端映射到
