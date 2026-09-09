@@ -26,6 +26,8 @@ artifacts/*
 # 也带时间戳），preflight 不读它。入库的理由是它承载项目的实测表现数据，
 # 别人 clone 后无需自备 API Key 也能看到这条链路跑出过什么结果。
 !artifacts/llm_search_report.json
+# 参考扫描的点位与取值。同为测量记录（非确定性证据），入库让响应面数据可复算。
+!artifacts/dense_grid_report.json
 *.db
 *.db-journal
 *.sqlite
