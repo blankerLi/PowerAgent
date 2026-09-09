@@ -32,6 +32,9 @@ artifacts/*
 # 报告里的图用相对路径 `../plots/`，只有保持这个目录结构才显示得出来。
 # `artifacts/*` 只匹配第一层，放行本目录后其内容不再被忽略。
 !artifacts/comp_tuning_v1/
+# 解质量对照的多次运行记录。随机侧的种子写在记录里，可原样复现；LLM 侧不可复现
+# （模型每次答的不一样），所以那一侧记的是分布而不是某一次的数字。
+!artifacts/solution_quality_report.json
 *.db
 *.db-journal
 *.sqlite

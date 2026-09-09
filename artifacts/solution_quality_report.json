@@ -1,0 +1,293 @@
+{
+  "note": "解质量对照：只更换提案来源，配置、档位、校验器、双层仿真、硬约束与停止判定全部相同。排名相对参考扫描的可行点集。按 R23.5 不比较引擎启动次数、不建立 Regret 体系。",
+  "recorded_at_utc": "2026-09-09T11:36:18+00:00",
+  "reference": {
+    "best_objective": 5.199999999999991,
+    "feasible_points": 36,
+    "grid_task_id": "dense_grid_7e2eb9908ffc4df08fecf11d2c609815",
+    "median_objective": 33.20000000000001,
+    "objective_direction": "minimize",
+    "objective_metric_id": "settling_time",
+    "scan_function": "dense_grid_scan",
+    "scanned_points": 144,
+    "worst_objective": 383.20000000000005
+  },
+  "runs": [
+    {
+      "best": {
+        "candidate_id": "e9e06bd03d720cf8",
+        "objective_target_us": 10.0,
+        "parameters_si": {
+          "ccomp": 1.87381742286e-09,
+          "rcomp": 12328.4673944
+        },
+        "target_reached": false,
+        "worst_case_objective_us": 46.2
+      },
+      "candidates": {
+        "accepted": 24,
+        "first_pass_rate": 0.96,
+        "proposed": 25,
+        "rejected": 1
+      },
+      "llm_calls": 0,
+      "model_id": null,
+      "proposal_rounds": 5,
+      "rank": 23,
+      "rank_status": "matched",
+      "recorded_at_utc": "2026-09-09T11:13:45+00:00",
+      "rejection_reasons": {
+        "duplicate_of_tested": 1
+      },
+      "seed": 20260909,
+      "source": "random",
+      "stop_reason": "no_improvement",
+      "workspace": "artifacts/quality_compare/random_seed20260909_20260909T111258Z"
+    },
+    {
+      "best": {
+        "candidate_id": "baba37b4b735bc03",
+        "objective_target_us": 10.0,
+        "parameters_si": {
+          "ccomp": 1.51991108295e-10,
+          "rcomp": 18738.1742286
+        },
+        "target_reached": true,
+        "worst_case_objective_us": 7.2
+      },
+      "candidates": {
+        "accepted": 28,
+        "first_pass_rate": 0.9333,
+        "proposed": 30,
+        "rejected": 2
+      },
+      "llm_calls": 0,
+      "model_id": null,
+      "proposal_rounds": 6,
+      "rank": 4,
+      "rank_status": "matched",
+      "recorded_at_utc": "2026-09-09T11:14:46+00:00",
+      "rejection_reasons": {
+        "duplicate_of_tested": 2
+      },
+      "seed": 20260910,
+      "source": "random",
+      "stop_reason": "target_reached",
+      "workspace": "artifacts/quality_compare/random_seed20260910_20260909T111345Z"
+    },
+    {
+      "best": {
+        "candidate_id": "5984740dfda78905",
+        "objective_target_us": 10.0,
+        "parameters_si": {
+          "ccomp": 1e-10,
+          "rcomp": 18738.1742286
+        },
+        "target_reached": true,
+        "worst_case_objective_us": 5.8
+      },
+      "candidates": {
+        "accepted": 17,
+        "first_pass_rate": 0.85,
+        "proposed": 20,
+        "rejected": 3
+      },
+      "llm_calls": 0,
+      "model_id": null,
+      "proposal_rounds": 4,
+      "rank": 2,
+      "rank_status": "matched",
+      "recorded_at_utc": "2026-09-09T11:15:17+00:00",
+      "rejection_reasons": {
+        "duplicate_in_batch": 1,
+        "duplicate_of_tested": 2
+      },
+      "seed": 20260911,
+      "source": "random",
+      "stop_reason": "target_reached",
+      "workspace": "artifacts/quality_compare/random_seed20260911_20260909T111446Z"
+    },
+    {
+      "best": {
+        "candidate_id": "5984740dfda78905",
+        "objective_target_us": 10.0,
+        "parameters_si": {
+          "ccomp": 1e-10,
+          "rcomp": 18738.1742286
+        },
+        "target_reached": true,
+        "worst_case_objective_us": 5.8
+      },
+      "candidates": {
+        "accepted": 15,
+        "first_pass_rate": 1.0,
+        "proposed": 15,
+        "rejected": 0
+      },
+      "llm_calls": 0,
+      "model_id": null,
+      "proposal_rounds": 3,
+      "rank": 2,
+      "rank_status": "matched",
+      "recorded_at_utc": "2026-09-09T11:15:49+00:00",
+      "rejection_reasons": {},
+      "seed": 20260912,
+      "source": "random",
+      "stop_reason": "target_reached",
+      "workspace": "artifacts/quality_compare/random_seed20260912_20260909T111517Z"
+    },
+    {
+      "best": {
+        "candidate_id": "e72e690368257305",
+        "objective_target_us": 10.0,
+        "parameters_si": {
+          "ccomp": 2.31012970008e-10,
+          "rcomp": 28480.3586844
+        },
+        "target_reached": true,
+        "worst_case_objective_us": 9.6
+      },
+      "candidates": {
+        "accepted": 27,
+        "first_pass_rate": 0.9,
+        "proposed": 30,
+        "rejected": 3
+      },
+      "llm_calls": 0,
+      "model_id": null,
+      "proposal_rounds": 6,
+      "rank": 5,
+      "rank_status": "matched",
+      "recorded_at_utc": "2026-09-09T11:16:40+00:00",
+      "rejection_reasons": {
+        "duplicate_in_batch": 1,
+        "duplicate_of_tested": 2
+      },
+      "seed": 20260913,
+      "source": "random",
+      "stop_reason": "target_reached",
+      "workspace": "artifacts/quality_compare/random_seed20260913_20260909T111549Z"
+    },
+    {
+      "best": {
+        "candidate_id": "417a617a5718f754",
+        "objective_target_us": 10.0,
+        "parameters_si": {
+          "ccomp": 1e-10,
+          "rcomp": 28480.3586844
+        },
+        "target_reached": true,
+        "worst_case_objective_us": 5.2
+      },
+      "candidates": {
+        "accepted": 24,
+        "first_pass_rate": 1.0,
+        "proposed": 24,
+        "rejected": 0
+      },
+      "llm_calls": 4,
+      "model_id": "deepseek-v4-flash",
+      "proposal_rounds": 4,
+      "rank": 1,
+      "rank_status": "matched",
+      "recorded_at_utc": "2026-09-09T11:23:04+00:00",
+      "rejection_reasons": {},
+      "seed": null,
+      "source": "llm",
+      "stop_reason": "target_reached",
+      "workspace": "artifacts/quality_compare/llm_0_20260909T111707Z"
+    },
+    {
+      "best": {
+        "candidate_id": "417a617a5718f754",
+        "objective_target_us": 10.0,
+        "parameters_si": {
+          "ccomp": 1e-10,
+          "rcomp": 28480.3586844
+        },
+        "target_reached": true,
+        "worst_case_objective_us": 5.2
+      },
+      "candidates": {
+        "accepted": 18,
+        "first_pass_rate": 1.0,
+        "proposed": 18,
+        "rejected": 0
+      },
+      "llm_calls": 3,
+      "model_id": "deepseek-v4-flash",
+      "proposal_rounds": 3,
+      "rank": 1,
+      "rank_status": "matched",
+      "recorded_at_utc": "2026-09-09T11:28:55+00:00",
+      "rejection_reasons": {},
+      "seed": null,
+      "source": "llm",
+      "stop_reason": "target_reached",
+      "workspace": "artifacts/quality_compare/llm_1_20260909T112304Z"
+    },
+    {
+      "best": {
+        "candidate_id": "417a617a5718f754",
+        "objective_target_us": 10.0,
+        "parameters_si": {
+          "ccomp": 1e-10,
+          "rcomp": 28480.3586844
+        },
+        "target_reached": true,
+        "worst_case_objective_us": 5.2
+      },
+      "candidates": {
+        "accepted": 24,
+        "first_pass_rate": 1.0,
+        "proposed": 24,
+        "rejected": 0
+      },
+      "llm_calls": 4,
+      "model_id": "deepseek-v4-flash",
+      "proposal_rounds": 4,
+      "rank": 1,
+      "rank_status": "matched",
+      "recorded_at_utc": "2026-09-09T11:36:18+00:00",
+      "rejection_reasons": {},
+      "seed": null,
+      "source": "llm",
+      "stop_reason": "target_reached",
+      "workspace": "artifacts/quality_compare/llm_0_20260909T112922Z"
+    }
+  ],
+  "summary": {
+    "llm": {
+      "all_ranks": [
+        1,
+        1,
+        1
+      ],
+      "objective_best": 5.2,
+      "objective_worst": 5.2,
+      "rank_best": 1,
+      "rank_median": 1,
+      "rank_worst": 1,
+      "runs": 3,
+      "runs_with_feasible_solution": 3,
+      "times_found_rank_1": 3
+    },
+    "random": {
+      "all_ranks": [
+        2,
+        2,
+        4,
+        5,
+        23
+      ],
+      "objective_best": 5.8,
+      "objective_worst": 46.2,
+      "rank_best": 2,
+      "rank_median": 4,
+      "rank_worst": 23,
+      "runs": 5,
+      "runs_with_feasible_solution": 5,
+      "times_found_rank_1": 0
+    }
+  }
+}
