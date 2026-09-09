@@ -79,15 +79,18 @@ _HARD_CONSTRAINT_UNITS: Mapping[str, str] = {
     "vout_max": "V",
     "peak_current_max": "A",
     "phase_margin_min": "deg",
+    "gain_margin_min": "dB",
 }
 
-# HardConstraints 的四个具名字段，遍历顺序固定（与 violations 列表的输出顺序
-# 一致，便于测试断言与报告展示）。
+# HardConstraints 的五个具名字段，遍历顺序固定（与 violations 列表的输出顺序
+# 一致，便于测试断言与报告展示）。两条裕量约束相邻排在末位：它们同属频域判据、
+# 同为 `applies_to_tier=[evaluation]`，挨着放使违规列表读起来与判据的分组一致。
 _HARD_CONSTRAINT_NAMES: tuple[str, ...] = (
     "vout_min",
     "vout_max",
     "peak_current_max",
     "phase_margin_min",
+    "gain_margin_min",
 )
 
 

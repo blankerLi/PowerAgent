@@ -12,7 +12,8 @@
 # =============================================================================
 
 # ===== 本节变更需重新审批（M0 出口冻结） =====
-# 恰四条，不接受第五条；每条恰含 value / observable / sense({lower,upper}) / applies_to_tier 四字段
+# 恰五条，不接受第六条；每条恰含 value / observable / sense({lower,upper}) / applies_to_tier 四字段
+# 第五条 gain_margin_min 由一次参考扫描的结果引入，变更理由见 requirements.md AC1 的变更记录
 hard_constraints:
   vout_min:
     value: 0.75                           # unit: V · 标称 0.8 V 下沉 6.25%，覆盖负载阶跃下冲全窗口
@@ -34,6 +35,17 @@ hard_constraints:
   phase_margin_min:
     value: 45.0                           # unit: deg · 经典稳定性判据；低于此值瞬态易出现振铃
     observable: phase_margin
+    sense: lower
+    applies_to_tier: [evaluation]
+  gain_margin_min:
+    value: 6.0                            # unit: dB · 与上面的 45 deg 同属一套经典判据（45°/6dB）。
+                                          # 缺这一条时参考扫描的最优点落在 rcomp=65793 Ω 的角点上，
+                                          # 增益裕量仅 1.917 dB —— 形式上满足其余四条、实际接近失稳。
+                                          # 本电路的增益裕量只随 rcomp 变化、与 ccomp 无关：rcomp 增大
+                                          # 使高频开环增益趋于常数 Rc·gm·ESR/Ri（ESR 零点令增益不再
+                                          # 滚降），因此这一条约束的作用是给设计域定上界，与
+                                          # phase_margin_min 定下界互补。
+    observable: gain_margin
     sense: lower
     applies_to_tier: [evaluation]
 # =============================================================================

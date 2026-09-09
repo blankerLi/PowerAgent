@@ -229,7 +229,25 @@
 
 #### Acceptance Criteria
 
-1. THE `constraints.yaml` 的 `hard_constraints` 节 SHALL 恰含 `vout_min`（V）、`vout_max`（V）、`peak_current_max`（A）、`phase_margin_min`（deg）四条约束且不含第五条，各条恰含 `value`、`observable`、取值属于 `{lower, upper}` 的 `sense` 与 `applies_to_tier` 四个字段且不含 `model_variant` 字段，其绑定关系为 `vout_min` → `obs.vout_min` / `lower`、`vout_max` → `obs.vout_max` / `upper`、`peak_current_max` → `phase_peak_current` / `upper`、`phase_margin_min` → `phase_margin` / `lower`，其中前三条的 `applies_to_tier` 为 `[screening, evaluation]`、`phase_margin_min` 的 `applies_to_tier` 为 `[evaluation]`。
+1. THE `constraints.yaml` 的 `hard_constraints` 节 SHALL 恰含 `vout_min`（V）、`vout_max`（V）、`peak_current_max`（A）、`phase_margin_min`（deg）、`gain_margin_min`（dB）五条约束且不含第六条，各条恰含 `value`、`observable`、取值属于 `{lower, upper}` 的 `sense` 与 `applies_to_tier` 四个字段且不含 `model_variant` 字段，其绑定关系为 `vout_min` → `obs.vout_min` / `lower`、`vout_max` → `obs.vout_max` / `upper`、`peak_current_max` → `phase_peak_current` / `upper`、`phase_margin_min` → `phase_margin` / `lower`、`gain_margin_min` → `gain_margin` / `lower`，其中前三条的 `applies_to_tier` 为 `[screening, evaluation]`、`phase_margin_min` 与 `gain_margin_min` 的 `applies_to_tier` 为 `[evaluation]`。
+
+> **AC1 变更记录（`hard_constraints` 节变更需重新审批）**
+>
+> 本条原文为「恰含四条且不含第五条」，不含 `gain_margin_min`。变更为五条的依据是一次
+> 12×12 参考扫描（`artifacts/dense_grid_report.json`）暴露出的判据缺口：
+>
+> - 网格最优点落在设计域角点 `rcomp=65793 Ω, ccomp=100 pF`，`settling_time` 2.2 µs，
+>   但该点的增益裕量只有 1.917 dB —— 接近失稳，不是可交付设计。
+> - 144 点中 60 个判定可行的点里，24 个（40%）的增益裕量低于 6 dB。
+> - 成因：`phase_margin_min = 45 deg` 是 45°/6 dB 这一配对稳定性判据的一半，
+>   原约束集只取了相位那一半。`gain_margin` 指标已被实现、计算并落库
+>   （Requirement 关于 `eval.margin` 的 AC5 要求每次调用恰产出两条 `MetricResult`），
+>   但没有任何约束条目消费它，于是最优化精确地利用了这个未被约束的自由度。
+> - 增益裕量在本电路上只随 `rcomp` 变化、与 `ccomp` 无关（`rcomp` 增大使高频开环
+>   增益趋于常数 `Rc·gm·ESR/Ri`，ESR 零点令增益不再滚降）。因此相位裕量约束管
+>   设计域的下界、增益裕量约束管上界，两者各管一个方向，缺一个方向即失守。
+>
+> 阈值 `6 dB` 取自与既有 `45 deg` 同一套经典判据，不是为了排除某个具体点而反推的数值。
 2. THE `eval.constraints.judge` SHALL 只判定该 run 所属场景的 `tier` 出现在该约束 `applies_to_tier` 中的约束条目，对每个参与判定的条目按其 `observable` 从本次 `MetricResult` 序列取值、按其 `sense` 比较，其余条目不参与本次判定、不写入 `violations`，也不影响本次 `feasible`；THE `eval.constraints.judge` SHALL 不读取 `model_variant`，判定所使用的模型变体由该 run 所在场景行声明的 `model_variant` 与该 `observable` 的可得性共同决定。
 3. THE `eval.constraints.judge` SHALL 只读 `MetricResult` 做判定，不重新计算物理量。
 4. IF 任一参与本次判定的硬约束其支撑 `MetricResult` 的 `valid` 为 `false`，THEN THE `eval.constraints.judge` SHALL 返回 `feasible=false` 并在 `violations` 中给出对应条目，该条目的 `constraint`、`limit` 与 `unit` 取自 `constraints.yaml`、`actual` 为空值，且不以 0、边界值或任何替代数值填充 `actual`。

@@ -705,9 +705,9 @@ def check_margin_extraction_ready(
 # `observable` 字段）与 `metrics.yaml`（`constraint_observables` 键集合、
 # `active_metrics`、各指标/观测量的 `unit`），因此两个配置形参缺一不可。
 #
-# `HardConstraints` 恰四个具名字段（R9.1），遍历顺序固定为
-# `vout_min / vout_max / peak_current_max / phase_margin_min`，与
-# `eval/constraints.py` 的 `_HARD_CONSTRAINT_NAMES` 遍历顺序一致（该顺序本身
+# `HardConstraints` 恰五个具名字段（R9.1），遍历顺序固定为
+# `vout_min / vout_max / peak_current_max / phase_margin_min / gain_margin_min`，
+# 与 `eval/constraints.py` 的 `_HARD_CONSTRAINT_NAMES` 遍历顺序一致（该顺序本身
 # 不影响正确性，只影响命中第一个违规约束时的报告顺序，取一致顺序便于测试与
 # 报告展示比对）。
 
@@ -716,13 +716,15 @@ _HARD_CONSTRAINT_NAMES: tuple[str, ...] = (
     "vout_max",
     "peak_current_max",
     "phase_margin_min",
+    "gain_margin_min",
 )
 
 # 硬约束名 → 该约束语义上必须匹配的物理单位。与 `eval/constraints.py` 的
 # `_HARD_CONSTRAINT_UNITS` 内容相同、但独立定义于本模块，不跨模块导入该私有
-# 常量：这四个约束名到单位的绑定是 `requirements.md` Requirement 9 AC1 已锁定
+# 常量：这五个约束名到单位的绑定是 `requirements.md` Requirement 9 AC1 已锁定
 # 的封闭事实（`vout_min`/`vout_max` → V、`peak_current_max` → A、
-# `phase_margin_min` → deg），不是运行期从某个模块动态解析得到的派生值——两个
+# `phase_margin_min` → deg、`gain_margin_min` → dB），不是运行期从某个模块
+# 动态解析得到的派生值——两个
 # 模块各自持有一份该常量镜像是「同一份不会变化的事实各自表达一次」，不是需要
 # 消除的重复。这也正是本函数存在的理由：`check_unit_mismatch()` 的职责就是
 # 保证 `metrics.yaml` 中该约束语义对应的单位始终与这份固定映射逐字符一致，
@@ -734,6 +736,7 @@ _HARD_CONSTRAINT_EXPECTED_UNITS: Mapping[str, str] = {
     "vout_max": "V",
     "peak_current_max": "A",
     "phase_margin_min": "deg",
+    "gain_margin_min": "dB",
 }
 
 

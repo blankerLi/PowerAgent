@@ -758,168 +758,168 @@
     },
     {
       "ccomp": 1e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 3.5999999999999925,
       "phase_margin": 95.43776496115895,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 1.51991108295e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 5.6000000000000005,
       "phase_margin": 100.24901482571151,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 2.31012970008e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 8.199999999999996,
       "phase_margin": 103.91542816750052,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 3.51119173422e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 11.200000000000001,
       "phase_margin": 106.52384032312726,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 5.33669923121e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 17.2,
       "phase_margin": 108.31153543236334,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 8.1113083079e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 25.200000000000003,
       "phase_margin": 109.51315366926647,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 1.23284673944e-09,
-      "feasible": true,
+      "feasible": false,
       "objective": 39.19999999999999,
       "phase_margin": 110.31303320726447,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 1.87381742286e-09,
-      "feasible": true,
+      "feasible": false,
       "objective": 64.2,
       "phase_margin": 110.84279481972075,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 2.84803586844e-09,
-      "feasible": true,
+      "feasible": false,
       "objective": 99.20000000000002,
       "phase_margin": 111.19269810267433,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 4.32876128108e-09,
-      "feasible": true,
+      "feasible": false,
       "objective": 161.20000000000002,
       "phase_margin": 111.42345212623421,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 6.57933224658e-09,
-      "feasible": true,
+      "feasible": false,
       "objective": 268.2,
       "phase_margin": 111.5754938704269,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 1e-08,
-      "feasible": true,
+      "feasible": false,
       "objective": 392.20000000000005,
       "phase_margin": 111.67561906804823,
       "rcomp": 43287.6128108
     },
     {
       "ccomp": 1e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 2.1999999999999993,
       "phase_margin": 116.1641700115564,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 1.51991108295e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 4.600000000000003,
       "phase_margin": 118.06184183353255,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 2.31012970008e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 5.199999999999991,
       "phase_margin": 119.34749533692502,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 3.51119173422e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 5.6000000000000005,
       "phase_margin": 120.20620571715466,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 5.33669923121e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 9.199999999999994,
       "phase_margin": 120.77557266507512,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 8.1113083079e-10,
-      "feasible": true,
+      "feasible": false,
       "objective": 18.199999999999996,
       "phase_margin": 121.15179305712397,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 1.23284673944e-09,
-      "feasible": true,
+      "feasible": false,
       "objective": 27.199999999999996,
       "phase_margin": 121.39993402020437,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 1.87381742286e-09,
-      "feasible": true,
+      "feasible": false,
       "objective": 53.2,
       "phase_margin": 121.56343222558138,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 2.84803586844e-09,
-      "feasible": true,
+      "feasible": false,
       "objective": 82.2,
       "phase_margin": 121.67109830522837,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 4.32876128108e-09,
-      "feasible": true,
+      "feasible": false,
       "objective": 141.20000000000002,
       "phase_margin": 121.7419743488681,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 6.57933224658e-09,
-      "feasible": true,
+      "feasible": false,
       "objective": 212.20000000000002,
       "phase_margin": 121.7886222725831,
       "rcomp": 65793.3224658
     },
     {
       "ccomp": 1e-08,
-      "feasible": true,
+      "feasible": false,
       "objective": 328.2,
       "phase_margin": 121.81932032948214,
       "rcomp": 65793.3224658
@@ -1009,26 +1009,26 @@
       "rcomp": 100000
     }
   ],
-  "feasible_points": 60,
+  "feasible_points": 36,
   "figures": [
-    "artifacts/dense_grid/20260909T091138Z/figures/response_surface_primary.png",
-    "artifacts/dense_grid/20260909T091138Z/figures/response_surface_phase_margin.png"
+    "artifacts/dense_grid/20260909T092500Z/figures/response_surface_primary.png",
+    "artifacts/dense_grid/20260909T092500Z/figures/response_surface_phase_margin.png"
   ],
   "grid_best": {
     "ccomp": 1e-10,
     "feasible": true,
-    "objective": 2.1999999999999993,
-    "phase_margin": 116.1641700115564,
-    "rcomp": 65793.3224658
+    "objective": 5.199999999999991,
+    "phase_margin": 73.02249647280381,
+    "rcomp": 28480.3586844
   },
-  "infeasible_or_invalid_points": 84,
+  "infeasible_or_invalid_points": 108,
   "note": "参考扫描的点位与取值记录。用途限于响应面可视化与解质量对照；按 R23.5 不用于 Regret 体系或搜索效率对照。",
   "objective_direction": "minimize",
   "objective_metric_id": "settling_time",
-  "recorded_at_utc": "2026-09-09T09:15:17+00:00",
+  "recorded_at_utc": "2026-09-09T09:28:32+00:00",
   "requested_point_count": 144,
   "scan_function": "dense_grid_scan",
   "scanned_points": 144,
-  "task_id": "dense_grid_106e9cbb9e1849b4b127e4c893cdb384",
-  "workspace": "artifacts/dense_grid/20260909T091138Z"
+  "task_id": "dense_grid_7e2eb9908ffc4df08fecf11d2c609815",
+  "workspace": "artifacts/dense_grid/20260909T092500Z"
 }

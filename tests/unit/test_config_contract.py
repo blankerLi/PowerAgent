@@ -43,8 +43,12 @@ def test_load_all_accepts_filled_configs(config_dir: Path) -> None:
     ]
 
 
-def test_hard_constraints_are_exactly_four(config_dir: Path) -> None:
-    """硬约束恰四条，不接受第五条（design.md §4.4 的数量约束）。"""
+def test_hard_constraints_are_exactly_five(config_dir: Path) -> None:
+    """硬约束恰五条，不接受第六条（requirements.md R9 AC1 的数量约束）。
+
+    第五条 `gain_margin_min` 由 AC1 的变更记录引入：`phase_margin_min` 只是
+    45°/6 dB 配对判据的一半，缺另一半时最优化会走到增益裕量 1.9 dB 的角点。
+    """
     bundle = load_all(config_dir)
 
     assert set(type(bundle.constraints.hard_constraints).model_fields) == {
@@ -52,6 +56,7 @@ def test_hard_constraints_are_exactly_four(config_dir: Path) -> None:
         "vout_max",
         "peak_current_max",
         "phase_margin_min",
+        "gain_margin_min",
     }
 
 

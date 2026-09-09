@@ -562,13 +562,19 @@ class HardConstraintEntry(StrictModel):
 
 
 class HardConstraints(StrictModel):
-    """恰四条且不接受第五条（R9.1）：vout_min / vout_max / peak_current_max /
-    phase_margin_min。"""
+    """恰五条且不接受第六条（R9.1）：vout_min / vout_max / peak_current_max /
+    phase_margin_min / gain_margin_min。
+
+    `gain_margin_min` 是本节的第五条，由 AC1 的变更记录引入：`phase_margin_min`
+    只是 45°/6 dB 配对判据的一半，缺了增益裕量那一半时，参考扫描的最优点会落在
+    增益裕量 1.9 dB 的角点上——形式上满足全部约束，实际接近失稳。
+    """
 
     vout_min: HardConstraintEntry
     vout_max: HardConstraintEntry
     peak_current_max: HardConstraintEntry
     phase_margin_min: HardConstraintEntry
+    gain_margin_min: HardConstraintEntry
 
 
 DesignVariableScale = Literal["log", "linear"]

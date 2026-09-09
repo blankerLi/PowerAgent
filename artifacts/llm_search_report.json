@@ -1,38 +1,38 @@
 {
   "best": {
-    "candidate_id": "3314690ce93c4d6f",
+    "candidate_id": "62e88761f38347e6",
     "objective_target_us": 25.0,
     "parameters_si": {
-      "ccomp": 5.33669923121e-10,
-      "rcomp": 18738.1742286
+      "ccomp": 8.1113083079e-10,
+      "rcomp": 12328.4673944
     },
     "target_reached": true,
-    "worst_case_objective_us": 18.2
+    "worst_case_objective_us": 23.2
   },
   "budget": {
-    "engine_starts_used": 16,
+    "engine_starts_used": 70,
     "max_engine_starts": 200
   },
   "candidates": {
-    "accepted": 6,
+    "accepted": 24,
     "first_pass_rate": 1.0,
-    "proposed": 6,
+    "proposed": 24,
     "rejected": 0
   },
   "cause": null,
   "llm": {
     "model_id": "deepseek-v4-flash",
     "outcomes": {
-      "ok": 1
+      "ok": 4
     },
-    "total_tokens": 12113
+    "total_tokens": 49893
   },
   "note": "一次真实 LLM 寻优的测量记录，非确定性证据；重跑数字会变。确定性门禁证据见 margin_cross_check.json 与 dual_model_consistency.json。",
-  "recorded_at_utc": "2026-09-09T07:45:39+00:00",
+  "recorded_at_utc": "2026-09-09T09:36:50+00:00",
   "rejection_reasons": {},
-  "rounds": 1,
+  "rounds": 4,
   "stop_reason": "target_reached",
   "task_id": "comp_tuning_v1",
-  "wallclock_s": 120.94,
-  "workspace": "artifacts/llm_search/20260909T074337Z"
+  "wallclock_s": 466.17,
+  "workspace": "artifacts/llm_search/20260909T092902Z"
 }
