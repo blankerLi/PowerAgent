@@ -1,0 +1,230 @@
+{#
+  报告主模板。章节顺序由 R18 AC4 规定，不可重排：结论边界声明 → 任务与配置哈希
+  → Baseline 前值基线 → Top 1/2/3 → 硬约束逐条结果 → 寻优前后对比 → 关键波形图
+  → 过程埋点摘要 → 推荐理由（空占位）→ 限制说明（空占位）。
+
+  结论边界声明以 `conclusion_section` 变量传入，已由 conclusion.md.j2 单独渲染
+  完毕。本模板拿到的是一段字符串，不是那一段的上下文——所以本模板里的 telemetry
+  等键无法反向进入结论段。
+
+  所有数值经 `fmt` 过滤器（= report.context.format_value，`.4g`）输出。占位段的
+  数值子集判定与这里共用同一个函数，见该函数的 docstring。
+
+  缺数据一律渲染 report.context.UNAVAILABLE，不估算、不填默认值、不插值、
+  不取其他任务的值（R18 AC7）。
+#}
+# 寻优报告 · `{{ task_id }}`
+
+## 一、结论边界声明
+
+{{ conclusion_section }}
+
+## 二、任务与配置哈希
+
+| 项 | 值 |
+| --- | --- |
+| `task_id` | `{{ task_id }}` |
+| 轨道 | {% if task.simulation_only %}仿真轨（`simulation_only = true`）{% else %}工程轨（`simulation_only = false`）{% endif %} |
+| `task_kind` | `{{ task.task_kind }}` |
+| `model_package_hash` | `{{ task.model_package_hash }}` |
+| `metrics_hash` | `{{ task.metrics_hash }}` |
+| `constraints_hash` | `{{ task.constraints_hash }}` |
+| `scenario_set_hash` | `{{ task.scenario_set_hash }}` |
+| `execution_env_hash` | `{{ task.execution_env_hash }}` |
+| `calibration_hash` | `{{ task.calibration_hash }}` |
+| 预算上限 | {{ task.budget_max_starts | fmt }} 次引擎启动 |
+| 起始时间 | {{ task.started_at }} |
+| 结束时间 | {{ task.ended_at or unavailable }} |
+
+{% if not config_binding.all_match %}
+> **当前配置与本任务落库时的配置不一致。**
+> {% if not config_binding.metrics_match %}`metrics.yaml` 现为 `{{ config_binding.current_metrics_hash }}`。{% endif %}
+> {% if not config_binding.constraints_match %}`constraints.yaml` 现为 `{{ config_binding.current_constraints_hash }}`。{% endif %}
+> 凡取自配置文件的内容（单位、阈值来源、合法域边界）在本报告中标为
+> `{{ unavailable }}`：用当前配置的取值去描述当时那次运行，会写出一份看起来完整
+> 却对不上号的报告。取自数据库的测量数值不受影响。
+{% endif %}
+
+### 冻结场景集
+
+| `scenario_id` | 层 | 模型变体 | 采集裕量 | `spec_version` |
+| --- | --- | --- | --- | --- |
+{% for s in scenarios %}
+| `{{ s.scenario_id }}` | {{ s.tier }} | {{ s.model_variant }} | {{ s.require_margin | fmt }} | `{{ s.spec_version }}` |
+{% endfor %}
+
+## 三、Baseline 前值基线
+
+{% if baseline.available %}
+| 项 | 值 |
+| --- | --- |
+| 门禁结果 | {% if baseline.passed %}通过{% else %}未通过{% endif %} |
+| `frozen_result_hash` | `{{ baseline.frozen_result_hash or unavailable }}` |
+| 冻结时间 | {{ baseline.frozen_at }} |
+{% else %}
+{{ unavailable }}：本任务的库中没有可匹配的前值基线记录。`baselines.gate_key` 是四个
+配置哈希的组合值，由门禁流程在冻结时算出并写入；渲染层不重算该组合值，也不用某条
+恰好存在的基线充数。
+{% endif %}
+
+## 四、Top 1/2/3
+
+主目标：`{{ comparison.objective_metric_id }}`（方向 `{{ comparison.objective_direction }}`），
+取值为评价集上的 worst-case。名次取自 `eval.aggregate` 的三段定序。
+
+{% for c in top_candidates %}
+### 第 {{ c.rank }} 名
+
+{% if not c.available %}
+{{ unavailable }}：可行候选数量少于 {{ c.rank }} 个。
+
+{% else %}
+- `candidate_id`：`{{ c.candidate_id }}`
+- 参数：{{ c.parameters | kvline }}
+- worst-case `{{ c.objective_metric_id }}`：{{ c.worst_case_value | fmt }}
+- 次目标：{{ c.secondary_values | kvline }}
+
+逐场景指标：
+
+| `scenario_id` | `metric_id` | 取值 | 有效 | 无效原因 |
+| --- | --- | --- | --- | --- |
+{% for m in c.metrics %}
+| `{{ m.scenario_id }}` | `{{ m.metric_id }}` | {{ m.value | fmt }} | {{ m.valid | fmt }} | {{ m.invalid_reason or "—" }} |
+{% endfor %}
+
+{% endif %}
+{% endfor %}
+
+## 五、硬约束逐条结果
+
+{% if not hard_constraints %}
+{{ unavailable }}：约束阈值与单位取自 `constraints.yaml` 与 `metrics.yaml`，而当前
+配置与本任务落库时的配置不一致（见第二节）。
+{% else %}
+| 约束 | 阈值 | 单位 | 方向 | 观测量 | 适用层 | 阈值来源 |
+| --- | --- | --- | --- | --- | --- | --- |
+{% for h in hard_constraints %}
+| `{{ h.name }}` | {{ h.value | fmt }} | {{ h.unit }} | {{ h.sense }} | `{{ h.observable }}` | {{ h.applies_to_tier | join(", ") }} | {{ h.threshold_source }} |
+{% endfor %}
+
+各 Top 候选的逐场景判定：
+
+| 名次 | `scenario_id` | 可行 | 违反项 |
+| --- | --- | --- | --- |
+{% for c in top_candidates %}{% if c.available %}{% for cr in c.constraints %}
+| {{ c.rank }} | `{{ cr.scenario_id }}` | {{ cr.feasible | fmt }} | {% if cr.violations %}{% for v in cr.violations %}`{{ v.constraint }}`（限 {{ v.limit | fmt }}，实测 {{ v.actual | fmt }} {{ v.unit }}）{% if not loop.last %} · {% endif %}{% endfor %}{% else %}—{% endif %} |
+{% endfor %}{% endif %}{% endfor %}
+{% endif %}
+
+## 六、寻优前后对比
+
+{% if comparison.best is none %}
+{{ unavailable }}：没有可行候选，无从构造对比。
+{% elif not comparison.baseline.available %}
+前值基线不可用（见第三节），因此本节只列寻优结果一侧，不构造差值——缺了基线还给出
+「改进了多少」，那个数字没有被减去的对象。
+
+| 项 | 寻优结果 |
+| --- | --- |
+| `candidate_id` | `{{ comparison.best.candidate_id }}` |
+| worst-case `{{ comparison.objective_metric_id }}` | {{ comparison.best.worst_case_value | fmt }} |
+{% if comparison.objective_target is not none %}
+| 达标线 | {{ comparison.objective_target | fmt }} |
+{% endif %}
+{% else %}
+| 项 | 前值基线 | 寻优结果 |
+| --- | --- | --- |
+| `frozen_result_hash` | `{{ comparison.baseline.frozen_result_hash or unavailable }}` | — |
+| `candidate_id` | — | `{{ comparison.best.candidate_id }}` |
+| worst-case `{{ comparison.objective_metric_id }}` | {{ unavailable }} | {{ comparison.best.worst_case_value | fmt }} |
+{% endif %}
+
+## 七、关键波形图
+
+{% if not plots %}
+{{ unavailable }}：本次渲染没有产出图文件。
+{% else %}
+{% for p in plots %}
+### {{ p.title }}
+
+{% if p.available %}
+![{{ p.title }}]({{ p.path }})
+{% else %}
+{{ unavailable }}：{{ p.reason }}
+{% endif %}
+
+{% endfor %}
+{% endif %}
+
+## 八、过程埋点摘要
+
+| 项 | 值 |
+| --- | --- |
+| 起始时间 | {{ telemetry.started_at }} |
+| 结束时间 | {{ telemetry.ended_at }} |
+| 引擎启动 | {{ telemetry.budget_used | fmt }} / {{ telemetry.budget_max | fmt }}{% if telemetry.budget_granted %}（含追加审批 {{ telemetry.budget_granted | fmt }}）{% endif %} |
+| `runs` 行数 | 共 {{ telemetry.runs.total | fmt }} · 完成 {{ telemetry.runs.done | fmt }} · 失败 {{ telemetry.runs.failed | fmt }} · 缓存命中 {{ telemetry.runs.cache_hits | fmt }} |
+| LLM 调用 | {% if telemetry.llm.available %}{{ telemetry.llm.calls | fmt }} 次 · {{ telemetry.llm.tokens | fmt }} token · 结果分布 {{ telemetry.llm.by_outcome }}{% else %}{{ unavailable }}{% endif %} |
+| 人工介入 | {{ telemetry.interventions | kvline }} |
+| 被拒候选 | {% if telemetry.rejection_counts %}{{ telemetry.rejection_counts | kvline }}{% else %}0{% endif %} |
+
+以下三项按 R23 AC7 记为 `runs` 表的派生日志字段，不作为本项目的结论指标；它们不出现
+在第一节的渲染上下文中。
+
+| 日志字段 | 值 |
+| --- | --- |
+| 首次可行解轮次 | {{ telemetry.first_feasible_round | fmt }} |
+| 可行候选率 | {{ telemetry.feasible_rate | fmt }} |
+| 重复率 | {{ telemetry.duplicate_rate | fmt }} |
+
+{% if no_feasible is not none %}
+## 九、无可行候选时的可审计结论
+
+合法域边界列在首位：若前值基线曾通过，说明这套约束与模型能产出至少一个可行解，
+那么整个域里没有一个点可行，更可能是域划错了而不是阈值定错了。
+
+### 1. 合法域边界
+
+{% if not no_feasible.legal_domain_available %}
+{{ unavailable }}：合法域取自 `constraints.yaml`，而当前配置与本任务落库时的配置
+不一致（见第二节）。
+{% else %}
+| 变量 | 单位 | `domain` 下端 | `domain` 上端 | 首档 | 末档 | 档位数 |
+| --- | --- | --- | --- | --- | --- | --- |
+{% for d in no_feasible.legal_domain %}
+| `{{ d.name }}` | {{ d.unit }} | {{ d.domain_low | fmt }} | {{ d.domain_high | fmt }} | {{ d.tick_first }} | {{ d.tick_last }} | {{ d.tick_count | fmt }} |
+{% endfor %}
+{% endif %}
+
+### 2. 逐条硬约束的阈值与阈值来源
+
+见第五节。
+
+### 3. 场景集
+
+`scenario_set_hash` = `{{ no_feasible.scenario_set_hash }}`，场景行摘要见第二节。
+
+### 4. 被拒候选按原因计数
+
+{% if not no_feasible.rejection_counts %}
+无被拒候选记录。
+{% else %}
+| 原因 | 计数 |
+| --- | --- |
+{% for reason, n in no_feasible.rejection_counts | dictsort %}
+| `{{ reason }}` | {{ n | fmt }} |
+{% endfor %}
+
+这一项是本节的核心：它区分「候选大量落在域外」（提案侧的问题）、「大量偏离档位」
+（档位定义或 prompt 的问题）与「大量约束违反」（约束或合法域的问题）。三者的下一步
+动作完全不同。
+{% endif %}
+
+### 5. 已用预算与上限
+
+{{ no_feasible.budget_used | fmt }} / {{ no_feasible.budget_max | fmt }} 次引擎启动。
+{% endif %}
+
+## {% if no_feasible is not none %}十{% else %}九{% endif %}、推荐理由
+
+## {% if no_feasible is not none %}十一{% else %}十{% endif %}、限制说明

@@ -28,6 +28,10 @@ artifacts/*
 !artifacts/llm_search_report.json
 # 参考扫描的点位与取值。同为测量记录（非确定性证据），入库让响应面数据可复算。
 !artifacts/dense_grid_report.json
+# 一份真实渲染出的报告及其波形图。入库的是渲染产物本身而不是手工整理的副本：
+# 报告里的图用相对路径 `../plots/`，只有保持这个目录结构才显示得出来。
+# `artifacts/*` 只匹配第一层，放行本目录后其内容不再被忽略。
+!artifacts/comp_tuning_v1/
 *.db
 *.db-journal
 *.sqlite
