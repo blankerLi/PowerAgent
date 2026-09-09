@@ -291,3 +291,116 @@ def test_state_can_be_rebuilt_from_the_database(outcome, bundle) -> None:
     # 最佳候选同样应能重建出来，且与任务结束时选出的一致。
     assert rebuilt.current_best is not None
     assert rebuilt.current_best.candidate_id == result.best_candidate_id
+
+
+# --------------------------------------------------------------------------
+# 报告渲染
+# --------------------------------------------------------------------------
+#
+# 断言挂在这个文件而不是新建一份：`outcome` fixture 已经跑完一次完整任务，报告渲染
+# 需要的正是那样一个库。另起一个文件就得再跑一遍仿真，而被测的是渲染而非仿真。
+
+
+def test_report_renders_from_the_finished_task(outcome, config_dir: Path, tmp_path, monkeypatch) -> None:
+    """`render_report()` 端到端产出 Markdown 与图，且不动 `llm_calls`。
+
+    `monkeypatch.chdir(tmp_path)`：图目录是 `artifacts/<task_id>/plots/`，相对当前
+    工作目录。不切目录的话测试会往仓库里写产物——测试留下的文件与真实渲染产物混在
+    一起，之后没人分得清哪个是哪个。
+
+    渲染前后 `llm_calls` 行数相同（R18 AC1）：报告是纯渲染，不推理。这条性质在
+    `report` 模块里靠"没有那条代码路径"保证（它不导入 `agent`），这里从外部再确认
+    一次——一旦有人为了"补一段自动结论"而在渲染层调模型，这条断言会失败。
+    """
+    from poweragent.report.render import render_report
+
+    result, store, _propose = outcome
+
+    calls_before = store.connection.execute(
+        "SELECT COUNT(*) FROM llm_calls WHERE task_id=?", (result.task_id,)
+    ).fetchone()[0]
+
+    # 先解析成绝对路径再切工作目录：`config_dir` fixture 给的是相对路径，chdir 之后
+    # 它就指向 tmp_path 下一个不存在的 configs/。
+    absolute_config_dir = config_dir.resolve()
+    monkeypatch.chdir(tmp_path)
+    report_path = render_report(
+        result.task_id, store=store, config_dir=absolute_config_dir
+    )
+
+    assert report_path.is_file(), "报告文件未产出"
+    text = report_path.read_text(encoding="utf-8")
+
+    # 默认输出路径由 AC1 规定。
+    assert report_path == Path("artifacts") / result.task_id / "reports" / (
+        f"report_{result.task_id}.md"
+    )
+
+    calls_after = store.connection.execute(
+        "SELECT COUNT(*) FROM llm_calls WHERE task_id=?", (result.task_id,)
+    ).fetchone()[0]
+    assert calls_after == calls_before, "渲染报告不得产生 LLM 调用"
+
+    # 十段的标题都在（顺序由 R18 AC4 规定，这里只验证不缺段）。
+    for heading in (
+        "结论边界声明",
+        "任务与配置哈希",
+        "Baseline 前值基线",
+        "Top 1/2/3",
+        "硬约束逐条结果",
+        "寻优前后对比",
+        "关键波形图",
+        "过程埋点摘要",
+        "推荐理由",
+        "限制说明",
+    ):
+        assert heading in text, f"报告缺少段落: {heading}"
+
+    # 库里的事实要出现在报告里：任务 id、停止原因、被选中的最佳候选。
+    assert result.task_id in text
+    assert result.stop_reason in text
+    assert result.best_candidate_id is not None
+    assert result.best_candidate_id in text
+
+
+def test_report_waveform_plot_matches_the_best_candidate(
+    outcome, config_dir: Path, tmp_path, monkeypatch
+) -> None:
+    """波形图画的是报告里那个最佳候选的运行，不是碰巧最早跑完的那个。
+
+    这条断言存在的原因是它曾经不成立：早先的实现按 `ORDER BY started_at LIMIT 1`
+    取"最早的可行评价层运行"，于是图与第四节列的是两个不同的候选。两边都渲染得
+    出来、都不报错，只是说的不是同一个设计——正是这种缺陷需要一条断言钉住。
+    """
+    from poweragent.report.render import render_report
+
+    result, store, _propose = outcome
+
+    absolute_config_dir = config_dir.resolve()
+    monkeypatch.chdir(tmp_path)
+    report_path = render_report(
+        result.task_id, store=store, config_dir=absolute_config_dir
+    )
+    text = report_path.read_text(encoding="utf-8")
+
+    plots = sorted((Path("artifacts") / result.task_id / "plots").glob("waveform_*.png"))
+    assert plots, "未产出波形图"
+    assert len(plots) == 1, f"应只画一张波形图，实际 {len(plots)} 张"
+
+    # 图文件名里的 run_id 必须属于最佳候选，且是评价层的那次运行。
+    run_id = plots[0].stem.removeprefix("waveform_")
+    row = store.connection.execute(
+        "SELECT r.candidate_id, s.tier FROM runs r "
+        "JOIN scenario_set s ON s.task_id=r.task_id AND s.scenario_id=r.scenario_id "
+        "WHERE r.run_id=?",
+        (run_id,),
+    ).fetchone()
+    assert row is not None, f"图对应的 run_id={run_id!r} 不在库中"
+    candidate_id, tier = row
+    assert candidate_id == result.best_candidate_id, (
+        f"波形图画的是 {candidate_id}，而报告的最佳候选是 {result.best_candidate_id}"
+    )
+    assert tier == "evaluation", "波形应取自评价层，而非筛选层的近似模型"
+
+    # 报告里的引用指向那张图，且用相对路径（连同 artifacts/ 复制后仍显示得出来）。
+    assert f"../plots/{plots[0].name}" in text

@@ -113,23 +113,39 @@ def _find_matching_dense_grid_task(store: Store, task_id: str) -> str | None:
     return match[0] if match else None
 
 
-def plot_response_surface(task_id: str, store: Store, out: Path) -> Path:
+def plot_response_surface(
+    task_id: str,
+    store: Store,
+    out: Path,
+    *,
+    metrics_cfg: MetricsConfig | None = None,
+    constraints_cfg: ConstraintsConfig | None = None,
+) -> Path:
     """响应面图（design.md §6.10）。
 
     复用 `reference.dense_grid.response_surface()` 而不是另画一套：那个函数已经处理
     了无效点的遮罩（不插值、不填默认值）与对数等距的坐标轴。报告再实现一遍会得到
     两份可能不一致的"同一张图"。
 
-    签名保持 design.md 的 `(task_id, store, out)` 三参形式，因此内部自行载入配置；
-    `response_surface()` 需要 `metrics_cfg`/`constraints_cfg` 才能知道主目标是哪个
-    指标、档位是哪些。
+    位置参数保持 design.md 的 `(task_id, store, out)` 三参形式。两个配置是可选
+    kwonly：`response_surface()` 需要它们才能知道主目标是哪个指标、档位是哪些。
+    给出时直接用；不给出时才回退到从 `configs/` 载入。
+
+    回退路径依赖当前工作目录，因此调用方**应当**把已有的配置传进来。`collect_plots()`
+    就是这么做的——它手上本来就有这两份配置，让本函数再去磁盘上找一遍，等于让渲染
+    结果取决于进程在哪个目录里启动。
     """
-    from poweragent.config.loader import load_all
     from poweragent.reference.dense_grid import response_surface
 
-    from poweragent.report.render import DEFAULT_CONFIG_DIR
+    if metrics_cfg is None or constraints_cfg is None:
+        from poweragent.config.loader import load_all
 
-    bundle = load_all(DEFAULT_CONFIG_DIR)
+        from poweragent.report.render import DEFAULT_CONFIG_DIR
+
+        bundle = load_all(DEFAULT_CONFIG_DIR)
+        metrics_cfg = metrics_cfg or bundle.metrics
+        constraints_cfg = constraints_cfg or bundle.constraints
+
     grid_task_id = _find_matching_dense_grid_task(store, task_id)
     if grid_task_id is None:
         raise LookupError(
@@ -141,8 +157,8 @@ def plot_response_surface(task_id: str, store: Store, out: Path) -> Path:
         grid_task_id,
         store,
         out,
-        metrics_cfg=bundle.metrics,
-        constraints_cfg=bundle.constraints,
+        metrics_cfg=metrics_cfg,
+        constraints_cfg=constraints_cfg,
     )
     return paths[0]
 
@@ -234,7 +250,13 @@ def collect_plots(
 
     surface_dir = out_dir / "response_surface"
     try:
-        surface = plot_response_surface(task_id, store, surface_dir)
+        surface = plot_response_surface(
+            task_id,
+            store,
+            surface_dir,
+            metrics_cfg=metrics_cfg,
+            constraints_cfg=constraints_cfg,
+        )
     except (LookupError, OSError, ValueError) as exc:
         plots.append(
             {

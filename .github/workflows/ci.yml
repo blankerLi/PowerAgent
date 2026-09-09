@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # matplotlib 在无显示环境里默认会尝试连接窗口系统并失败。`report/plots.py`
+      # 自己设了 Agg，但 `reference/dense_grid.py` 也画图——在环境层面统一指定，
+      # 比要求每个画图模块各自记得设置更可靠。
+      MPLBACKEND: Agg
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      # Action 版本固定到具体 release（不用 @main / @v4 这类浮动引用），与
+      # pyproject.toml 用 `==` 锁依赖的约定一致：CI 自己的可复现性不该比被测代码差。
+      - uses: actions/setup-python@v5.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Install project with dev extras
+        run: pip install -e ".[dev]"
+
+      # 全部测试层都在 CI 里跑。仿真后端是纯 Python（numpy/scipy），不需要 MATLAB
+      # 许可证，所以不存在"本地才能跑"的层——包括双层仿真的集成测试与报告渲染。
+      #
+      # `live_llm` 由 pyproject.toml 的 addopts 默认排除：那些用例会真实调用模型，
+      # 在 CI 里跑会消耗额度、且网络波动会让构建随机失败。它们测的是与真实服务的
+      # 连通性，那不是每次 push 都需要重新确认的性质。
+      - name: Run tests
+        run: python -m pytest
+
+      # preflight 的两个门禁依赖这两份记录的内容哈希（写在 metrics.yaml 里）。
+      # 如果重跑脚本得到的哈希与入库那份不同，说明"确定性证据"其实不确定——那时
+      # 门禁比对的就只是"某次跑出来的偶然值"，形式上过得去而实际上什么也没保证。
+      #
+      # 这一步因此不是在检查代码，而是在检查那两条门禁本身还成不成立。
+      - name: Deterministic evidence is reproducible
+        run: |
+          sha256sum artifacts/margin_cross_check.json \
+                    artifacts/dual_model_consistency.json > evidence.sha256
+          python scripts/margin_cross_check.py
+          python scripts/dual_model_consistency.py
+          sha256sum -c evidence.sha256
+
+      # 证据文件重跑后若内容有变（上一步已经会失败），这里进一步把差异打出来，
+      # 免得只看到一行 "FAILED" 而不知道变了什么。
+      - name: Show evidence diff on failure
+        if: failure()
+        run: git diff -- artifacts/ || true
