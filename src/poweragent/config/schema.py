@@ -179,9 +179,30 @@ class TaskConfig(StrictModel):
 
 
 class ModelVariantPackage(StrictModel):
-    """`model_package.switching` / `model_package.averaged` 的依赖闭包清单（R4.1）。"""
+    """`model_package.switching` / `model_package.averaged` 的依赖闭包清单（R4.1）。
+
+    ## 两个入口字段：`entry` 与 `slx_entry`
+
+    系统有两个仿真后端，它们仿真的是**同一个电路的两种表示**，落在两个不同的文件上：
+
+    - `entry`（必填）：Python 后端的入口，`models/buck4ph_*.yaml`——拓扑、工作点与
+      控制参数的声明式定义，也是 `matlab/build_models.m` 生成 `.slx` 时读取的
+      唯一参数源。
+    - `slx_entry`（可选）：MATLAB 后端的入口，`models/buck4ph_*.slx`。
+
+    `slx_entry` 为可选而非必填：不使用 MATLAB 后端的部署（CI、无 Simulink 许可证的
+    开发机）不需要仓库里存在 `.slx`，把它写成必填会让那些环境无法通过 schema 校验。
+    MATLAB 后端在 `slx_entry` 缺失时由 `sim/simulate.py` 的 `_resolve_model_path()`
+    显式报错，而不是静默回退到 `entry`（那会把一个 `.yaml` 路径交给 `load_system`）。
+
+    两个字段**都进依赖闭包**（`sim/hashing.py` 的 `_variant_paths()`）。`.slx` 虽然
+    由 `entry` 派生，仍必须独立计入 `model_package_hash`：它是一个可被手工编辑的
+    二进制文件，"由脚本生成"是当前的工作方式而不是文件系统强制的约束。不计入它，
+    改动 `.slx` 就不会使旧结论失效，而"模型变更使旧结论失效"是本系统的核心属性之一。
+    """
 
     entry: str = Field(min_length=1)
+    slx_entry: str | None = None
     referenced_models: list[str] = Field(default_factory=list)
     data_dictionaries: list[str] = Field(default_factory=list)
     matlab_functions: list[str] = Field(default_factory=list)

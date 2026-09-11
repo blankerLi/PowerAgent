@@ -92,21 +92,58 @@ function res = run_linear_analysis(model_cfg_json, params_json, scenario_json, m
 %   带宽重新标定（与 P-1/P-2 探针"需校准"类占位的处理方式一致）。
 %
 % -----------------------------------------------------------------------
+% 为什么必须 UseExactDelayModel='on'（R2024a 实测，非风格选择）
+%
+%   平均模型里电流内环的采样保持用 Transport Delay 块表达（Td = 0.5/(N*fsw)）。
+%   linearize 的**默认**行为是把 Transport Delay 按 Pade 近似处理，而 Pade 阶数取自
+%   块的 PadeOrder 参数、默认为 0——即延迟被整个丢弃。实测同一个开环链：
+%
+%     UseExactDelayModel='off'（默认）: PM=80.37 deg, GM(linear)=0,  hasdelay=false
+%     UseExactDelayModel='on'         : PM=73.0223 deg,              hasdelay=true
+%                                        GM(linear)=[0 2.87938562613188 2.891 2.892 2.892]
+%
+%   Python 侧参考值（sim/backends/margin.py 的 margins_from_state_space，同一工作点
+%   与同一组参数）是 PM=73.022 deg、GM(linear)=2.879385——与 'on' 的结果逐位一致，
+%   与 'off' 的结果差 7 度且增益裕量完全错误。
+%
+%   为什么不能"将就"用 Pade：sim/backends/margin.py 的模块 docstring 已经论证过
+%   同一件事的另一面——频域必须用**精确**纯延迟，否则相位下界只到 -180° 的渐近线、
+%   永不穿越，allmargin 得不到有限的增益裕量，下游 eval/margin.py 会把整条裕量
+%   （相位裕量与增益裕量在那里同步成败）判为 extraction_failed。时域求解可以用一阶
+%   滞后近似（Simulink 原生支持带延迟的求解，这一点比 scipy 宽松），但频域不行。
+%
+% -----------------------------------------------------------------------
+% 落盘只存 margin_data，且显式 '-v7'
+%
+%   本文件早先版本是 save(freq_response_path, 'margin_data', 'linsys')。'linsys' 是
+%   MATLAB 的 ss 类对象，scipy.io.loadmat 读取类对象的行为不可靠；而下游
+%   eval/margin.py 的 _extract_from_averaged_linearization() **只读 margin_data**，
+%   从不碰 linsys。存一个读不了又没人用的变量，只会让整个文件的加载多一条失败路径。
+%
+%   '-v7' 必须显式指定：MATLAB 的 save 默认版本取自用户偏好设置，可能是 '-v7.3'
+%   （HDF5），而 scipy.io.loadmat **不支持** v7.3，会直接抛异常。同一个理由见
+%   private/collect_signals.m 的文件头。
+%
+% -----------------------------------------------------------------------
 % 线性化/频响估计的输入输出点（analysis points）来源（design.md 未规定，
 % 本文件的显式选择）：
 %   本文件不从 io_contract 读取 Block Path 来构造线性分析的输入/输出点
 %   （io_contract.injectable_params 只登记设计变量的 Block Path，
 %   output_signals 只登记 logsout 信号名，两者都不是线性分析点）。本文件
-%   假定目标模型已通过 Simulink Control Design 的 Linear Analysis Points
-%   工具在模型内标注好开环输入/输出分析点：`linearize(model_name)` 在未
-%   显式传入 io 参数时会自动使用模型内已标注的分析点；`frestimate` 没有
-%   这种隐式行为，因此显式调用 `getlinio(model_name)` 取回同一组已标注的
-%   分析点后传入。若模型未标注任何分析点，两者都会抛出异常，落入上方
+%   假定目标模型已在模型内标注好开环输入/输出分析点。本项目由
+%   matlab/build_slx_model.m 在生成模型时用 linio/setlinio 写入：verr 处
+%   'openinput'（注入并断环）、vout 处 'output'，与 sim/backends/margin.py
+%   的开环定义（"在误差信号处断环，输入 u = verr，输出 vout"）一致。
+%   两个分支都显式 `getlinio(model_name)` 取回那组分析点后传入，不依赖
+%   `linearize(model_name)` 的隐式行为——一旦要传 linearizeOptions，两参数
+%   形式 `linearize(model, options)` 就不被支持（见上一节的实测记录）。
+%   若模型未标注任何分析点，两者都会抛出异常，落入上方
 %   "status 仍为 'ok'，freq_response_path 为空"的分支。
 
 engine_starts = 0;
 freq_response_path = '';
 status = 'ok';
+reason = '';
 
 cfg = jsondecode(model_cfg_json);
 params = jsondecode(params_json);
@@ -131,17 +168,28 @@ try
     end
     apply_params(model_name, whitelist, params);
 
-    % ---- 场景条件注入：模型工作区变量赋值（镜像 simulate_once.m 的
-    %      local_assign_scenario_to_workspace，见下方 local 函数说明） ----
-    local_assign_scenario_to_workspace(model_name, scenario);
+    % ---- 场景条件注入：唯一委托给 private/assign_scenario.m（与 simulate_once.m
+    %      同一实现；此处曾是一份独立副本，其白名单漂移导致过整条裕量链路静默
+    %      失败，详见 assign_scenario.m 的文件头） ----
+    assign_scenario(model_name, scenario);
 
     switch primary_method
         case 'linear_analysis_on_averaged'
             engine_starts = engine_starts + 1;
-            linsys = linearize(model_name);
+            % UseExactDelayModel='on' 是必需的，不是可选优化：见文件头
+            % "为什么必须 UseExactDelayModel" 一节的实测记录。
+            lin_opt = linearizeOptions('UseExactDelayModel', 'on');
+            % io 必须显式传入：linearize(model, options) 这个两参数形式**不被支持**
+            % （R2024a 实测报 "下标为 1 的索引超出范围"，linearize.m:355——它把第二个
+            % 实参当成了 io/op 而不是 options）。只有 linearize(model, io, options)
+            % 三参数形式有效。getlinio 取回的正是模型内已标注的分析点，与不带
+            % options 时 linearize(model) 隐式使用的是同一组。
+            io = getlinio(model_name);
+            linsys = linearize(model_name, io, lin_opt);
             margin_data = allmargin(linsys); %#ok<NASGU>
             freq_response_path = local_resolve_freq_response_path(cfg, scenario);
-            save(freq_response_path, 'margin_data', 'linsys');
+            % 只存 margin_data，且显式 '-v7'：见文件头"落盘只存 margin_data"一节。
+            save(freq_response_path, 'margin_data', '-v7');
 
         case 'freq_response_estimator_on_switching'
             engine_starts = engine_starts + 1;
@@ -150,7 +198,7 @@ try
             freq_rad_s = 2 * pi * freq_hz;   % frestimate 默认按 rad/s 解释频率向量
             frd_data = frestimate(model_name, io, freq_rad_s); %#ok<NASGU>
             freq_response_path = local_resolve_freq_response_path(cfg, scenario);
-            save(freq_response_path, 'frd_data');
+            save(freq_response_path, 'frd_data', '-v7');
 
         otherwise
             % margin_cfg.primary_method 的取值域由 config.schema（Python 侧）
@@ -172,6 +220,8 @@ catch err
     % 标注分析点等原因抛出的异常）：status 保持 'ok'，freq_response_path
     % 保持已初始化的空字符串（见上方"为什么本文件不复用 map_error.m"说明）。
     freq_response_path = '';
+    % 把异常原因带出来（见下方 res.reason 的说明）。
+    reason = local_error_summary(err);
 end
 
 res = struct();
@@ -179,25 +229,46 @@ res.status = status;
 res.freq_response_path = freq_response_path;
 res.method = primary_method;
 res.engine_starts = engine_starts;
+% reason：采集未产出可用频响时的原因文本，成功时为空字符串。
+%
+% 加这个字段的理由：本文件对「引擎没坏，只是这次没算出能用的裕量数据」的处理是
+% status 保持 'ok'、freq_response_path 置空（design.md §11.3 错误映射表的那一行）。
+% 那个设计是对的——下游 eval.margin.extract_margin() 据此判 extraction_failed——
+% 但它此前**不留任何痕迹**：调用方只看到一个空路径，无从知道是模型没标分析点、
+% linearize 数值奇异，还是落盘失败。实测踩过一次：linearize 的两参数形式不被支持
+% 而报「下标为 1 的索引超出范围」，返回值里看不出任何线索，只能靠在 MATLAB 里
+% 逐步手工复现才定位到。
+%
+% Python 后端的 PythonSession._run_linear_analysis() 早已在同一情形下返回
+% "reason" 字段，本字段与它对齐而非新发明。sim/simulate.py 不读它（那里只需要
+% freq_response_path 是否为空），它的用途是诊断与日志。
+res.reason = reason;
 
+end
+
+
+function s = local_error_summary(err)
+% 把 MException 压成一行可读文本：标识符 + 首行消息 + 最内层的文件:行号。
+% 不做完整堆栈——这个字段是给「为什么没算出裕量」一个可查的线索，不是替代调试器。
+id = local_safe_field(err, 'identifier');
+msg = local_safe_field(err, 'message');
+msg = regexprep(msg, '\s+', ' ');
+if numel(msg) > 300
+    msg = [msg(1:300) '...'];
+end
+where = '';
+try
+    if ~isempty(err.stack)
+        where = sprintf(' at %s:%d', err.stack(1).name, err.stack(1).line);
+    end
+catch
+    % err 可能是不带 stack 的等价 struct；留空。
+end
+s = sprintf('%s: %s%s', id, msg, where);
 end
 
 function name = local_model_name(model_path)
 [~, name] = fileparts(model_path);
-end
-
-function local_assign_scenario_to_workspace(model_name, scenario)
-% 与 simulate_once.m 的同名 local 函数逐字符一致；本文件的复制理由与
-% "引擎瞬态异常识别"一节相同（小型、稳定、单用途，不值得为两个调用点
-% 新增共享私有模块，也不修改已落地的 simulate_once.m 去导出该函数）。
-mws = get_param(model_name, 'ModelWorkspace');
-scenario_fields = {'vin_v', 'temp_c', 'load_start_a', 'load_end_a', 'slew_a_per_us'};
-for i = 1:numel(scenario_fields)
-    f = scenario_fields{i};
-    if isfield(scenario, f)
-        assignin(mws, f, double(scenario.(f)));
-    end
-end
 end
 
 function p = local_resolve_freq_response_path(cfg, scenario)
@@ -248,9 +319,17 @@ end
 function v = local_safe_field(err, field_name)
 % err 为 MException 或等价 struct；字段缺失时返回空字符串（与 map_error.m
 % 的同名 local 函数逐字符一致，见上方复制理由）。
-if isfield(err, field_name) && ~isempty(err.(field_name))
-    v = char(err.(field_name));
-else
+%
+% 不用 isfield()：它只对 struct 有效，对 MException **对象**恒返回 false，
+% 会使本函数对真实异常永远返回空字符串、连带让 local_is_engine_transient()
+% 的全部判据恒为假。完整说明见 private/map_error.m 的同名函数——两处已同步修改。
+v = '';
+try
+    raw = err.(field_name);
+    if ~isempty(raw)
+        v = char(raw);
+    end
+catch
     v = '';
 end
 end

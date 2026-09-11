@@ -14,19 +14,40 @@
 #   冻结机制会因为过度敏感而被绕过——那才是真正的失效。
 # =============================================================================
 
+# 两个入口字段（见 config/schema.py 的 ModelVariantPackage docstring）：
+#   entry     = Python 后端的入口，models/buck4ph_*.yaml。拓扑/工作点/控制参数的声明式
+#               定义，同时是 matlab/build_slx_model.m 生成 .slx 时读取的唯一参数源——
+#               两个后端读同一份参数，不可能漂移。
+#   slx_entry = MATLAB 后端的入口，models/buck4ph_*.slx。可选：不使用 MATLAB 后端的
+#               环境（CI、无 Simulink 许可证的机器）不需要仓库里存在 .slx。
+# 两者都计入 model_package_hash：.slx 由 entry 派生只是当前的工作方式，不是文件系统
+# 强制的约束，手工改了 .slx 而不改生成脚本，哈希也必须变。
+#
+# 但计入 .slx 的是它的**规范化字节**而不是原始字节（sim/hashing.py 的
+# _canonical_slx_bytes()）。原因正是上面那段闭包边界裁定的同一条道理：.slx 的原始
+# 字节对"用同一份输入重复生成"不确定——实测同一 spec 连续生成 4 次得到 4 个不同的
+# sha256，差异全在文件元数据、文档 UUID、块 UUID 与编辑器界面状态里。若直接哈希原始
+# 字节，这个门禁测的就是"文件最近有没有被重新写过"而不是"模型是否真的变了"，于是
+# 每次重新生成模型都要重走一遍冻结审批——门禁会因为过度敏感而被绕过，那才是真正的
+# 失效。规范化排除文件元数据与界面状态条目、剔除 UUID 与时间戳，保留全部模型定义
+# （systems/*.xml 的块与连线、configSet0.xml 的求解器配置等）。
 model_package:
   switching:                              # 开关模型闭包（依赖闭包不以主观重要性筛选条目）
-    entry: models/buck4ph_switching.yaml  # path · 开关模型入口（Python 后端的拓扑/工作点定义，
-                                          #   地位等同 Simulink 后端的 .slx）
+    entry: models/buck4ph_switching.yaml  # path · 开关模型的参数源（Python 后端直接用）
+    slx_entry: models/buck4ph_switching.slx # 由 scripts/build_slx_models.py 生成
     referenced_models: []                  # list[path] · 被 entry 引用的模型
     data_dictionaries: []                  # list[path] · .sldd 数据字典
     matlab_functions: [matlab/+pa]         # list[path] · 目录，展开为其下全部文件；MATLAB 后端的薄封装层
+                                           #   只含 +pa（运行期契约层）。matlab/build_slx_model.m 不在其中：
+                                           #   它是模型的生成器而非被仿真的对象，计入闭包会让改一处
+                                           #   注释也使全部旧结论失效——那是过度敏感而非严格。
     init_scripts: []                       # list[path] · 初始化脚本
     mat_inputs: []                         # list[path] · 被 entry/init_scripts 读取的 MAT 输入
     custom_libraries: []                   # list[path] · 自定义库
   averaged:                                # 条件节；averaged_model_required=false 时留空（不填）
     entry: models/buck4ph_averaged.yaml    # 同一电路的平均模型；不重复列 matlab_functions，
                                            #   封装层已由 switching 节计入闭包
+    slx_entry: models/buck4ph_averaged.slx # 由 scripts/build_slx_models.py 生成
     referenced_models: []
     data_dictionaries: []
     matlab_functions: []
@@ -46,16 +67,37 @@ io_contract:
                                           # 设计变量键集合恰为 {rcomp, ccomp}（design.md §4.1/§5.1）
                                           # block_path 对 Simulink 后端是真实 Block Path；对 Python
                                           # 后端是模型内的逻辑参数路径，两者由各自后端解释。
-    rcomp: { block_path: "buck4ph/compensator/Rcomp", param: "Resistance", unit: ohm }
-    ccomp: { block_path: "buck4ph/compensator/Ccomp", param: "Capacitance", unit: F }
+                                          #
+                                          # block_path 的根段 "buck4ph" 是**占位根**，不是任何真实
+                                          # 模型的名字：本节只有一份、不按变体分列，而实际模型名由
+                                          # slx_entry 的文件名决定（buck4ph_averaged /
+                                          # buck4ph_switching）。注入与存在性校验前由
+                                          # matlab/+pa/private/resolve_block_path.m 把根段替换为实际
+                                          # 模型名，见该文件的文件头说明。
+                                          #
+                                          # param 取 "Value"：两个设计变量在 Simulink 侧都由 Constant
+                                          # 块承载 SI 原值（Constant 块的参数名就是 Value）。不用 Gain
+                                          # 块，因为 Ccomp 在方程里以 1/Ccomp 出现（d_xc = i_err/Ccomp），
+                                          # 用 Gain 承载就得注入倒数，而 apply_params.m 明确不做任何
+                                          # 换算——让 Constant 持有原值、由 Divide 块做除法，注入值与
+                                          # 这里声明的 SI 单位逐位一致。
+    rcomp: { block_path: "buck4ph/compensator/Rcomp", param: "Value", unit: ohm }
+    ccomp: { block_path: "buck4ph/compensator/Ccomp", param: "Value", unit: F }
   output_signals:                         # logsout 信号名映射；名称须与 metrics.yaml 的 signal 字段一致
     vout:   { logsout_name: "Vout", unit: V }
     iout:   { logsout_name: "Iout", unit: A }
     iphase: { logsout_name: "Iphase", unit: A, dimension: n_phase }
-  solver:
-    type: ode23tb                          # MATLAB 后端的隐式刚性求解器；Python 后端映射到 scipy BDF
-    max_step: 2.0e-8                       # unit: s · 20 ns ≈ 开关周期(2 µs)的 1/100，足以分辨纹波
-    rel_tol: 1.0e-4                        # unit: 无量纲
+  solver:                                  # 本节描述的是**平均模型**的求解器；开关模型对求解器的要求
+                                           # 不同，两个后端都按变体分别处理（见下方各字段说明）。
+    type: ode23tb                          # 平均模型的隐式刚性求解器（MATLAB 侧）；Python 后端映射到 scipy BDF
+    max_step: 2.0e-8                       # unit: s · 20 ns ≈ 开关周期(2 µs)的 1/100，足以分辨纹波。
+                                           #   **只对开关模型生效**：Python 侧 switching.py 用它作为固定
+                                           #   步长显式欧拉的步长，MATLAB 侧 build_slx_model.m 用它作为
+                                           #   Solver='ode1' 的 FixedStep。平均模型忽略本字段，两个后端
+                                           #   都把步长上限锁到输出网格间距 0.2 µs（averaged.py 的
+                                           #   max_step=output_dt_s；build_slx_model.m 的 MaxStep）——
+                                           #   平均模型按定义不含开关纹波，没有需要 20 ns 才能分辨的动态。
+    rel_tol: 1.0e-4                        # unit: 无量纲 · 平均模型的相对容差（开关模型用固定步长，不用它）
     stop_time: 1.0e-3                      # unit: s · 1 ms · 须覆盖 step_trigger + 500 µs 的指标窗口
   initial_condition: steady_state_from_init_script   # 非物理量，固定取值
   vout_target_v: 0.8                       # unit: V · 标称输出电压；metrics.yaml settling_time.band
@@ -77,9 +119,17 @@ runtime:
   python_version: "3.11"
   execution_mode: serial                   # enum {serial, fast_restart, parsim}；parsim 需 P-2 门禁（G-M-1-2）
   max_wallclock_per_run_s: 180             # unit: s(int) · 单次仿真墙钟上限，超时即判卡死而非慢。
-                                           # 无 P-1 探针数据（Simulink 许可证不可用），按 Python 开关
-                                           # 模型 1 ms @ 20 ns ≈ 5×10^4 步的保守估计取 3 分钟。
-                                           # D2 拿到实测单次墙钟后按 ceil(3×single_run_s) 收紧。
+                                           # 原注释写的是"无 P-1 探针数据（Simulink 许可证不可用），
+                                           # 按保守估计取 3 分钟"。许可证现已可用，实测单次开关模型
+                                           # 仿真：首次 29 s（几乎全是 Simulink 首次编译），同一
+                                           # engine 会话内后续调用 0.5~1 s。
+                                           #
+                                           # 仍保留 180 而不是按 ceil(3×single_run_s) 收到 90：这条
+                                           # 上限的语义是"超时即判卡死而非慢"，而单次耗时的分布是
+                                           # 双峰的（首次编译 vs 稳态），压到刚好覆盖首峰会让任何一次
+                                           # 异常抖动都变成误判卡死。`runs.elapsed_ms` 现已落库
+                                           # （此前该列恒为 NULL，见 store/repo.py 的 close_run_ok），
+                                           # 攒够几次真实运行的分布再定这个数。
 
 dual_model_consistency:                   # 供 Dual-Model Consistency 核对与 preflight 消费
                                           # （运行期不复核，design.md §8.5）

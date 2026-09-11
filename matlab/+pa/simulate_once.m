@@ -18,7 +18,9 @@ function res = simulate_once(model_cfg_json, params_json, scenario_json)
 %                      键集合须是 model_cfg_json 的 injectable_params 白名单的子集，
 %                      白名单校验本身由 apply_params.m 负责（见下方软依赖说明）。
 %     scenario_json  - 场景条件，含 vin_v / temp_c / load_start_a / load_end_a /
-%                      slew_a_per_us（task.yaml 场景行既有字段名，design.md §4.1）。
+%                      slew_a_per_us（task.yaml 场景行既有字段名，design.md §4.1）
+%                      与 step_trigger_s（负载阶跃触发时刻，由 Python 侧算出，
+%                      见 local_assign_scenario_to_workspace 的说明）。
 %                      可选 run_id 字段用于命名落盘的波形文件。
 %
 %   返回 RES 为 struct，字段固定四项：
@@ -116,8 +118,8 @@ try
     end
     apply_params(model_name, whitelist, params);
 
-    % ---- 场景条件注入：模型工作区变量赋值（见上方说明） ----
-    local_assign_scenario_to_workspace(model_name, scenario);
+    % ---- 场景条件注入：唯一委托给 private/assign_scenario.m ----
+    assign_scenario(model_name, scenario);
 
     engine_starts = 1;
     sim_out = sim(model_name);
@@ -139,7 +141,9 @@ status = map_error(cfg, elapsed_s, caught_err, vout, iphase);
 
 if strcmp(status, 'ok')
     waveform_path = local_resolve_waveform_path(cfg, scenario);
-    collect_signals(sim_out, waveform_path);
+    % cfg / scenario 转交 collect_signals：前者提供 output_signals 的 logsout_name
+    % （既是取回名也是落盘变量名），后者提供 step_trigger_s。见该文件的文件头说明。
+    collect_signals(sim_out, waveform_path, cfg, scenario);
 else
     waveform_path = '';
 end
@@ -154,17 +158,6 @@ end
 
 function name = local_model_name(model_path)
 [~, name] = fileparts(model_path);
-end
-
-function local_assign_scenario_to_workspace(model_name, scenario)
-mws = get_param(model_name, 'ModelWorkspace');
-scenario_fields = {'vin_v', 'temp_c', 'load_start_a', 'load_end_a', 'slew_a_per_us'};
-for i = 1:numel(scenario_fields)
-    f = scenario_fields{i};
-    if isfield(scenario, f)
-        assignin(mws, f, double(scenario.(f)));
-    end
-end
 end
 
 function logsout = local_get_logsout(sim_out)

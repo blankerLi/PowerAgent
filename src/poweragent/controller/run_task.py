@@ -859,18 +859,31 @@ def run_tier(
 #   显式、有限、文档化的输入集合：`{python_version: sys.version,
 #   platform: platform.platform(), matlab_release: model_cfg.runtime.
 #   matlab_release, toolboxes: model_cfg.runtime.toolboxes, execution_mode:
-#   model_cfg.runtime.execution_mode}`——即"Python 运行时版本 + 操作系统
-#   平台标识 + `model.yaml` 里已经声明的 MATLAB 环境三项（`matlab_release`/
-#   `toolboxes`/`execution_mode`，这些字段本就是"执行环境"语义、且已经过
-#   `config.schema` 校验，不是本函数凭空发明的新字段）"，经 `canonical_json`
-#   规范化后取 sha256。选择这五个字段而非更少或更多的理由：`simulation_key`
+#   model_cfg.runtime.execution_mode, sim_backend: session.backend_id}`——即
+#   "Python 运行时版本 + 操作系统平台标识 + `model.yaml` 里已经声明的 MATLAB
+#   环境三项（`matlab_release`/`toolboxes`/`execution_mode`，这些字段本就是
+#   "执行环境"语义、且已经过 `config.schema` 校验，不是本函数凭空发明的新
+#   字段）+ 本次实际使用的仿真后端标识"，经 `canonical_json` 规范化后取
+#   sha256。选择这六个字段而非更少或更多的理由：`simulation_key`
 #   把 `execution_env_hash` 与 `model_package_hash`/`model_variant` 并列为
 #   影响仿真结果可比较性的独立维度（R17.1/R17.2 的可复现性判据要求"相同的
 #   `execution_env_hash`"才能比较两次运行）——Python 版本与操作系统平台是
 #   最直接影响数值计算环境的两项（`numpy`/`scipy` 的浮点行为可能随平台/
 #   Python 版本有细微差异），MATLAB 侧的三项环境声明同样属于"仿真执行环境"
-#   的范畴且已在 `model.yaml` 中结构化存在，不需要另外发明字段来源。**这是
-#   一个显式记录的设计决策，不是 design.md 已经锁定的公式**——若后续任务
+#   的范畴且已在 `model.yaml` 中结构化存在，不需要另外发明字段来源。
+#
+#   `sim_backend` 是引入 MATLAB/Simulink 后端时新增的第六项，且是必需的：
+#   系统现在有两个仿真后端（`sim/backends/session.py` 的 `PythonSession` 与
+#   `sim/engine.py` 的 `MatlabSession`），它们在同一台机器上跑时上述五项
+#   **完全相同**——同一个 Python、同一个平台，`matlab_release`/`toolboxes`/
+#   `execution_mode` 都读同一份 `model.yaml`。没有这一项，同一个 `runs.db`
+#   里 Python 后端跑过的候选会被 `store.find_cached_simulation()` 判为缓存
+#   命中，MATLAB 后端一次都不会真正执行，而记录看起来完全正常。这是一个
+#   静默的正确性问题，不是性能优化。取值来自会话对象的 `backend_id` 类属性
+#   而非配置声明，理由见 `sim/engine.py` 对该属性的注释：读事实不读声明，
+#   声明与事实不符这种失败模式就不存在，也就不需要额外一条校验去防它。
+#
+#   **这是一个显式记录的设计决策，不是 design.md 已经锁定的公式**——若后续任务
 #   （或用户）认为该字段集合需要调整，属于对本函数这一处实现细节的修订，
 #   不影响 `execution_env_hash` 在其余代码中的使用方式（全部下游代码只把它
 #   当作一个不透明的字符串使用，从未解析其内部构造）。
@@ -1174,15 +1187,21 @@ def _default_propose_fn(
     return ProposeResult(candidates=(), stop_recommendation=False)
 
 
-def _compute_execution_env_hash(model_cfg: ModelConfig) -> str:
+def _compute_execution_env_hash(model_cfg: ModelConfig, *, sim_backend: str) -> str:
     """见模块顶部"6. 六个哈希与 `tasks` 行"一节对 `execution_env_hash`
-    输入字段集合的完整说明与理由。"""
+    输入字段集合的完整说明与理由。
+
+    `sim_backend` 取调用方持有的会话对象的 `backend_id`（`"python"` /
+    `"matlab"`）。它是必填 kwonly 而非可选默认值：默认值会让"忘记传"这件事
+    静默退化成"两个后端算出同一个哈希"，而那正是这个字段要防止的情形。
+    """
     fields = {
         "python_version": sys.version,
         "platform": platform.platform(),
         "matlab_release": model_cfg.runtime.matlab_release,
         "toolboxes": list(model_cfg.runtime.toolboxes),
         "execution_mode": model_cfg.runtime.execution_mode,
+        "sim_backend": sim_backend,
     }
     return hashlib.sha256(canonical_json(fields).encode("utf-8")).hexdigest()
 
@@ -1387,6 +1406,20 @@ def _checkpoint1_summary(
         ),
     }
 
+    # 遍历 `HardConstraints` 的字段而不是手写一份名字清单。
+    #
+    # 手写清单漏过一条：这里原本只列了 vout_min / vout_max / peak_current_max /
+    # phase_margin_min 四项，`gain_margin_min` 在它作为第五条硬约束被加进
+    # `constraints.yaml` 与 `config/schema.py` 时没有同步加到这个元组里。后果是
+    # Checkpoint 1 打印给人确认的硬约束少一条——而那条正是参考扫描暴露"约束集
+    # 缺了一半稳定性判据"之后补上的那条，它缺席时人在确认任务时看到的恰好是
+    # 修复前的约束集。判定链路本身不受影响（`eval/constraints.py` 从
+    # `ConstraintsConfig` 读，不经过这里；实测 12 个评价场景的 `gain_margin`
+    # 全部算出并判定，range 9.186~23.73 dB），但这是给人看的那一端，不该错。
+    #
+    # 改为按 pydantic 模型的字段顺序遍历之后，`HardConstraints` 增删字段会自动
+    # 反映到这里，同一类漏项不会再发生。`model_fields` 保序（pydantic v2 按声明
+    # 顺序），因此输出顺序仍是确定的。
     hard_constraints = {
         name: {
             "value": entry.value,
@@ -1395,10 +1428,8 @@ def _checkpoint1_summary(
             "applies_to_tier": list(entry.applies_to_tier),
         }
         for name, entry in (
-            ("vout_min", constraints_cfg.hard_constraints.vout_min),
-            ("vout_max", constraints_cfg.hard_constraints.vout_max),
-            ("peak_current_max", constraints_cfg.hard_constraints.peak_current_max),
-            ("phase_margin_min", constraints_cfg.hard_constraints.phase_margin_min),
+            (field_name, getattr(constraints_cfg.hard_constraints, field_name))
+            for field_name in type(constraints_cfg.hard_constraints).model_fields
         )
     }
 
@@ -1639,7 +1670,9 @@ def run_task(
     scenario_set_hash = ctrl_scenario.compute_scenario_set_hash(task_cfg)
     metrics_hash_value = _metrics_hash_of(metrics_cfg.model_dump(mode="json"))
     constraints_hash_value = _constraints_hash_of(constraints_cfg.model_dump(mode="json"))
-    execution_env_hash_value = _compute_execution_env_hash(model_cfg)
+    execution_env_hash_value = _compute_execution_env_hash(
+        model_cfg, sim_backend=session.backend_id
+    )
     calibration_hash_value = "" if task_cfg.simulation_only else ""
     # simulation_only=False（工程轨）时 calibration_hash 的真实计算依赖任务
     # 20.6（calib 模块，M2，尚未落地）；本函数当前对两轨都取空串，工程轨下

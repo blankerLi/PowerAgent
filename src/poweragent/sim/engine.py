@@ -51,10 +51,33 @@ design.md §6.3.1 给出的 `MatlabSession` 接口只有 `__enter__` / `__exit__
 "只调用一次"本身是一个调用约定，不是需要用元类、模块级全局或锁来"解决"的问题；
 给一个只需要被调用一次的类加装单例强制机制，属于为了绕开一次编排决策而添加与
 design.md 未要求的额外机器化，本模块不引入。
+
+`__enter__()` 里的 `addpath`：为什么必须有，为什么不经 `call()`
+--------------------------------------------------------------
+`matlab/+pa` 是一个 MATLAB `+package` 目录，只有它的**父目录**（`matlab/`）在
+MATLAB 搜索路径上时，`pa.simulate_once` 之类的包限定名才能被解析。实测（R2024a，
+MATLAB Engine 启动后 cwd 为启动进程的工作目录）：未 addpath 时
+`feval('pa.inspect_model', ...)` 直接失败于「函数或变量 'pa.inspect_model' 无法
+识别」；addpath 之后同一调用正常进入函数体。因此 `MatlabSession` 必须知道仓库
+根目录，`base_dir` 参数由此而来——与 `PythonSession(base_dir=...)` 的签名对齐，
+两个后端的构造形状一致。
+
+`addpath` 直接走 `self._engine.addpath(...)` 而不经 `call()` 的白名单：白名单约束
+的是「寻优期不接受任意 MATLAB 命令」（需求 R5.2），约束对象是候选驱动的仿真调用；
+把包目录加进搜索路径是**会话建立本身**的一步，发生在任何候选存在之前，且参数不来自
+任何候选或 LLM 输出。把 `addpath` 加进 `ALLOWED_MATLAB_FUNCTIONS` 反而会扩大白名单
+的语义——那份清单现在的含义是「`pa.*` 之外一律拒绝」，加进一个 MATLAB 内置函数会
+让它变成「`pa.*` 加上若干例外」，例外一旦开始就没有天然的停止位置。
+
+`exist()` 不能用于检查 `pa.*` 可达性：实测 `exist('pa.inspect_model')` 在函数完全
+可用时仍返回 0（`exist` 不识别包限定名）。本模块因此改为检查 `matlab/+pa` 目录在
+文件系统上存在，缺失即在启动后立刻失败并清理 Engine，而不是留到第一次
+`call()` 时抛出一个难以定位的「函数无法识别」。
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import TracebackType
 from typing import Any
 
@@ -82,27 +105,62 @@ class MatlabCallNotAllowedError(ValueError):
 class MatlabSession:
     """MATLAB Engine 生命周期管理；进程内单例（按调用约定），串行使用。
 
-    用法：
+    用法（`base_dir` 为仓库根目录，用于把 `matlab/` 加进 MATLAB 搜索路径）：
 
-        with MatlabSession() as session:
-            session.call("pa.simulate_once", params_json, scenario_json, nargout=1)
+        with MatlabSession(base_dir=".") as session:
+            session.call("pa.simulate_once", model_cfg_json, params_json,
+                         scenario_json, nargout=1)
 
     "进程内单例"是一条使用约定（见模块顶部说明），由调用方保证一次 `run_task()`
     执行期间只构造并进入一个实例；本类自身不内置单例强制机制。
     """
 
-    def __init__(self) -> None:
+    #: 后端标识，进入 `execution_env_hash` 的输入字段集合（`controller/run_task.py`
+    #: 的 `_compute_execution_env_hash()`）。两个后端在同一台机器上跑时，
+    #: `python_version` / `platform` / `matlab_release` / `toolboxes` /
+    #: `execution_mode` 五项完全相同，只有这一项不同——没有它，`simulation_key`
+    #: 会把两个后端的仿真结果判为可互换的缓存命中。
+    #:
+    #: 取自会话对象而非配置文件：这样它描述的是"这次实际用了哪个后端"这一事实，
+    #: 不可能与事实不符。若改为在 `model.yaml` 里声明，就需要额外一条 preflight
+    #: 校验去确认声明与实际传入的 session 一致，而那条校验本身又可能被绕过。
+    backend_id: str = "matlab"
+
+    def __init__(self, base_dir: str | Path = ".") -> None:
+        self._base_dir = Path(base_dir)
         self._engine: Any | None = None
 
     def __enter__(self) -> "MatlabSession":
-        """启动 MATLAB Engine 会话并持有其句柄；返回 `self`。
+        """启动 MATLAB Engine 会话、把 `<base_dir>/matlab` 加进搜索路径，返回 `self`。
 
         `import matlab.engine` 延迟到此处执行（见模块顶部"延迟导入"说明），使本模块
         在未安装 MATLAB Engine for Python 的环境中仍可被安全 import。
+
+        `addpath` 是必需的一步而非便利措施：`matlab/+pa` 是 MATLAB `+package` 目录，
+        其父目录不在搜索路径上时全部 `pa.*` 白名单函数都无法被解析（见模块顶部
+        "`__enter__()` 里的 `addpath`"一节的实测记录）。`matlab/+pa` 目录缺失时在
+        此处立即失败并关闭已启动的 Engine——否则会泄漏一个 MATLAB 进程，且失败会
+        延迟到第一次 `call()` 才以「函数无法识别」的形式出现。
         """
         import matlab.engine  # noqa: PLC0415 -- 有意延迟导入，见模块文档
 
+        package_parent = (self._base_dir / "matlab").resolve()
+        if not (package_parent / "+pa").is_dir():
+            raise RuntimeError(
+                f"MATLAB 包目录不存在: {package_parent / '+pa'}；"
+                f"MatlabSession(base_dir=...) 应指向仓库根目录"
+                f"（当前 base_dir={self._base_dir!r}）"
+            )
+
         self._engine = matlab.engine.start_matlab()
+        try:
+            self._engine.addpath(str(package_parent), nargout=0)
+        except BaseException:
+            # 已启动的 Engine 必须关闭，否则本次失败会留下一个孤立的 MATLAB 进程
+            # 并继续占用一个许可证席位。
+            self._engine.quit()
+            self._engine = None
+            raise
         return self
 
     def __exit__(

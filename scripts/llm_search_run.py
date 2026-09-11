@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -54,6 +55,7 @@ from poweragent.controller.run_task import run_task  # noqa: E402
 from poweragent.controller.scenario import compute_scenario_set_hash  # noqa: E402
 from poweragent.eval.aggregate import rank  # noqa: E402
 from poweragent.sim.backends.session import PythonSession  # noqa: E402
+from poweragent.sim.engine import MatlabSession  # noqa: E402
 from poweragent.sim.hashing import (  # noqa: E402
     model_package_hash,
     resolve_dependency_closure,
@@ -62,6 +64,12 @@ from poweragent.store.artifacts import ArtifactStore  # noqa: E402
 from poweragent.store.repo import Store  # noqa: E402
 
 REPORT_PATH = REPO_ROOT / "artifacts" / "llm_search_report.json"
+
+# 后端选择：默认 python。默认值不是"哪个更好"，而是"不改变既有结论"——
+# artifacts/llm_search_report.json 是 Python 后端产出的，默认切到 MATLAB 会让重跑
+# 得到一份不可与之比较的记录（`execution_env_hash` 含 `sim_backend`，两个后端的
+# 仿真结果按设计不互相命中缓存）。两个会话类的构造签名一致，查表即可，不需要工厂。
+SESSION_CLASSES = {"python": PythonSession, "matlab": MatlabSession}
 
 
 def _freeze_configs(store: Store, bundle) -> None:
@@ -189,6 +197,15 @@ def _print_summary(stats: dict) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--backend",
+        choices=tuple(SESSION_CLASSES),
+        default="python",
+        help="仿真后端（默认 python；matlab 需要 Simulink 许可证与 models/*.slx）",
+    )
+    args = parser.parse_args()
+
     load_local_env(REPO_ROOT / ".env")
     if not os.environ.get(API_KEY_ENV):
         print(f"缺少 {API_KEY_ENV}，无法调用真实模型。", file=sys.stderr)
@@ -217,9 +234,10 @@ def main() -> int:
 
     print(f"workspace: {workspace}")
     print(f"model    : {client.model_id}")
+    print(f"backend: {args.backend}")
     print("running...")
 
-    with PythonSession(base_dir=REPO_ROOT) as session:
+    with SESSION_CLASSES[args.backend](base_dir=REPO_ROOT) as session:
         result = run_task(
             bundle.task,
             bundle.model,

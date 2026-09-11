@@ -8,7 +8,9 @@ function apply_params(model_name, injectable_params, params_si)
 %                           负责确保该模型已加载（bdIsLoaded），本函数不加载、不保存、
 %                           不修改磁盘上的模型文件。
 %     injectable_params  - struct，键为设计变量名（如 rcomp/ccomp），每个字段为一个
-%                           struct，含 block_path（Simulink Block Path，char）、
+%                           struct，含 block_path（Simulink Block Path，char；其根段
+%                           是占位根，注入前经 resolve_block_path.m 替换为实际
+%                           model_name，见该文件的文件头说明）、
 %                           param（该 Block 的参数名，char）与 unit（SI 单位标识，
 %                           仅供追溯、不做单位换算）。取自 model.yaml 的
 %                           io_contract.injectable_params 白名单（design.md §4.2），
@@ -37,7 +39,11 @@ for i = 1:numel(param_names)
     name = param_names{i};
     spec = injectable_params.(name);
     value = params_si.(name);
-    set_param(spec.block_path, spec.param, local_format_value(value));
+    % block_path 的根段是占位根（model.yaml 只有一份 injectable_params，不按变体
+    % 分列），须替换为实际加载的模型名后才是合法的绝对 Block Path。
+    % 见 resolve_block_path.m 的文件头说明。
+    resolved_path = resolve_block_path(model_name, spec.block_path);
+    set_param(resolved_path, spec.param, local_format_value(value));
 end
 
 end

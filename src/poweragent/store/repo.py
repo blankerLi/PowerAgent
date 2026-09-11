@@ -907,17 +907,47 @@ class Store:
 
     def close_run_ok(self, run_id: str, result: SimulationResult) -> None:
         """把 `run_id` 从 `running` 终结为 `done`，写入 `waveform_ref` /
-        `observable_ref` / `ended_at`（`failure_class` / `cause` 保持 `NULL`）。
+        `observable_ref` / `elapsed_ms` / `ended_at`（`failure_class` / `cause`
+        保持 `NULL`）。
 
         `UPDATE ... WHERE run_id=? AND status='running'`：影响行数为 0 时该行
         不存在或已处于终态，回滚并抛 `RunTerminationRejectedError`，六列保持
         首次终结取值不变（需求 R14.7）。
+
+        ## `elapsed_ms` 此前漏写（实测发现的缺口）
+
+        本方法早先只写 `waveform_ref` / `observable_ref` / `ended_at` 三列，
+        尽管它接收的是整个 `SimulationResult`（其中 `elapsed_ms` 一直有值：
+        `matlab/+pa/simulate_once.m` 用 tic/toc 测得，`PythonSession` 用
+        `time.perf_counter()` 测得）。后果是 `runs.elapsed_ms` 列在所有历史运行
+        里恒为 `NULL`——三次实测运行 24/24、45/45、34/34 行全空。
+
+        这一列不是装饰性的过程量，它是这个项目里"仿真有多贵"的唯一事实记录：
+
+        - `preflight` 的 `check_budget_feasibility()` 需要 `probe_single_run_s`
+          来估算总墙钟是否超预算。该值本该来自实测，缺了这一列就只能填估计值——
+          `configs/model.yaml` 里 `max_wallclock_per_run_s: 180` 那句注释
+          「无 P-1 探针数据……按保守估计取 3 分钟」正是这个缺口的直接后果。
+        - 分层执行的成本梯度（筛选层 vs 评价层差多少倍）是 README 里的一条主张，
+          没有这一列就无法从库里复算它，只能靠外部计时。
+        - `find_cached_simulation()` 读回 `elapsed_ms` 时用了 `or 0` 兜底，
+          那个兜底本来是防 `NULL`，而在缺口存在时它掩盖了问题——读出来永远是 0，
+          看起来像"这次仿真不花时间"。
+
+        缓存命中的行由调用方显式传 `elapsed_ms=0`（`controller/run_task.py`），
+        语义是"本次没有真的跑仿真"，与本方法无关。
         """
         with self.tx() as conn:
             cur = conn.execute(
                 "UPDATE runs SET status='done', waveform_ref=?, observable_ref=?, "
-                "ended_at=? WHERE run_id=? AND status='running'",
-                (result.waveform_ref, result.observable_ref, _now_iso(), run_id),
+                "elapsed_ms=?, ended_at=? WHERE run_id=? AND status='running'",
+                (
+                    result.waveform_ref,
+                    result.observable_ref,
+                    result.elapsed_ms,
+                    _now_iso(),
+                    run_id,
+                ),
             )
             if cur.rowcount == 0:
                 raise RunTerminationRejectedError(

@@ -58,6 +58,7 @@ from poweragent.controller.search_state import (  # noqa: E402
     legal_domain_from_config,
 )
 from poweragent.sim.backends.session import PythonSession  # noqa: E402
+from poweragent.sim.engine import MatlabSession  # noqa: E402
 from poweragent.store.artifacts import ArtifactStore  # noqa: E402
 from poweragent.store.repo import Store  # noqa: E402
 
@@ -67,6 +68,13 @@ REPORT_PATH = REPO_ROOT / "artifacts" / "solution_quality_report.json"
 # 随机侧每轮提出的候选数。取 5 是为了落在 LLM 侧的 [3, 6] 区间中段——"每轮提几个"
 # 若两侧不同，被对照的就不止提案来源一个变量了。
 RANDOM_CANDIDATES_PER_ROUND = 5
+
+# 后端选择：默认 python。默认值不是"哪个更好"，而是"不改变既有结论"——
+# artifacts/solution_quality_report.json 里已有的运行是 Python 后端产出的，
+# 而本脚本的输出是**追加**到同一份记录里的。用另一个后端追加会让同一份记录里
+# 混入两种不可比较的运行（`execution_env_hash` 含 `sim_backend`），
+# 而"LLM 侧 vs 随机侧"这个对照的前提正是除提案来源外其余评价路径完全相同。
+SESSION_CLASSES = {"python": PythonSession, "matlab": MatlabSession}
 
 
 # ==========================================================================
@@ -224,7 +232,9 @@ def make_random_propose_fn(
 # ==========================================================================
 
 
-def run_once(bundle, *, source: str, seed: int | None, label: str) -> dict:
+def run_once(
+    bundle, *, source: str, seed: int | None, label: str, backend: str = "python"
+) -> dict:
     """跑一次完整寻优，返回该次的统计与解质量排名。"""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     workspace = REPO_ROOT / "artifacts" / "quality_compare" / f"{label}_{stamp}"
@@ -258,7 +268,7 @@ def run_once(bundle, *, source: str, seed: int | None, label: str) -> dict:
         )
         model_id = None
 
-    with PythonSession(base_dir=REPO_ROOT) as session:
+    with SESSION_CLASSES[backend](base_dir=REPO_ROOT) as session:
         result = run_task(
             bundle.task,
             bundle.model,
@@ -395,6 +405,12 @@ def main() -> int:
     parser.add_argument(
         "--seed-base", type=int, default=20260909, help="随机种子基数，用于可复现"
     )
+    parser.add_argument(
+        "--backend",
+        choices=tuple(SESSION_CLASSES),
+        default="python",
+        help="仿真后端（默认 python；见 SESSION_CLASSES 的注释说明为何不建议改）",
+    )
     args = parser.parse_args()
 
     if args.random <= 0 and args.llm <= 0:
@@ -415,7 +431,13 @@ def main() -> int:
         # 追加的运行只是把同一个结果记了两遍，看起来样本变多而其实没有。
         seed = args.seed_base + existing_random + index
         print(f"[random {index + 1}/{args.random}] seed={seed} ...")
-        run = run_once(bundle, source="random", seed=seed, label=f"random_seed{seed}")
+        run = run_once(
+            bundle,
+            source="random",
+            seed=seed,
+            label=f"random_seed{seed}",
+            backend=args.backend,
+        )
         run["rank"], run["rank_status"] = lookup_rank(
             ranking, run["best"]["parameters_si"] if run["best"] else None
         )
@@ -424,7 +446,13 @@ def main() -> int:
 
     for index in range(args.llm):
         print(f"[llm {index + 1}/{args.llm}] ...")
-        run = run_once(bundle, source="llm", seed=None, label=f"llm_{index}")
+        run = run_once(
+            bundle,
+            source="llm",
+            seed=None,
+            label=f"llm_{index}",
+            backend=args.backend,
+        )
         run["rank"], run["rank_status"] = lookup_rank(
             ranking, run["best"]["parameters_si"] if run["best"] else None
         )

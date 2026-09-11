@@ -235,9 +235,23 @@ end
 function v = local_safe_field(err, field_name)
 % err 为 MException 或等价 struct；字段缺失时返回空字符串，保证上层的
 % lower()/contains() 调用不因缺字段而报错。
-if isfield(err, field_name) && ~isempty(err.(field_name))
-    v = char(err.(field_name));
-else
+%
+% 不能用 isfield() 做存在性判断（R2024a 实测的真实 bug，不是风格问题）：
+% isfield() 只对 struct 有效，对**对象**恒返回 false，而 sim() / linearize() 等
+% 抛出的 caught_err 正是 MException 对象。用 isfield() 时本函数对真实异常永远
+% 返回空字符串，于是 local_is_engine_transient() 的全部字符串判据（license /
+% engine connection）恒为假——许可证瞬时失败与引擎连接中断会被误判成
+% solver_error，而那两类失败本该走 engine_transient 的重试路径。
+%
+% 改为直接动态字段访问 + try/catch：`err.(field_name)` 对 MException 的属性与
+% struct 的字段都有效，字段/属性不存在时抛错并被捕获为空字符串。
+v = '';
+try
+    raw = err.(field_name);
+    if ~isempty(raw)
+        v = char(raw);
+    end
+catch
     v = '';
 end
 end

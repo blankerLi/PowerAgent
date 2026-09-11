@@ -34,6 +34,7 @@ R23.5 明确禁止基于 Dense Grid 建立 Regret 体系或搜索效率对照，
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import shutil
@@ -63,6 +64,7 @@ from poweragent.reference.dense_grid import (  # noqa: E402
     tiered_grid_scan,
 )
 from poweragent.sim.backends.session import PythonSession  # noqa: E402
+from poweragent.sim.engine import MatlabSession  # noqa: E402
 from poweragent.sim.hashing import (  # noqa: E402
     fast_fingerprint,
     model_package_hash,
@@ -85,6 +87,19 @@ GATE_MAX_WALLCLOCK_HOURS = 2.0
 # 保守上界。用实测值而不是留空，是因为判据要求一个具体数字才能比较；标注它的来源
 # 与探针不同，是为了不把实测值伪装成探针值。
 SINGLE_RUN_S = 0.5
+
+# 后端选择：默认 python。
+#
+# 默认值不是"哪个更好"的判断，而是"不改变既有结论"：artifacts/ 下已入库的参考扫描
+# 记录是 Python 后端产出的，默认切到 MATLAB 会让重跑本脚本得到一份不可与之比较的
+# 记录（`execution_env_hash` 含 `sim_backend`，两个后端的结果按设计不互相命中缓存）。
+#
+# 不引入工厂函数或注册表：两个会话类的构造签名一致（都只接 `base_dir`），一个字典
+# 查表就够。`sim/backends/__init__.py` 已明确"两个扩展点是函数边界而非抽象层"，
+# 在 sim 包里加一个 open_session() 还会让 `import poweragent.sim` 连带 import
+# PythonSession（依赖 scipy），破坏 engine.py 特意保持的"无 MATLAB/无 scipy 也能
+# import"性质。
+SESSION_CLASSES = {"python": PythonSession, "matlab": MatlabSession}
 
 
 def _freeze_configs(store: Store, bundle) -> None:
@@ -196,6 +211,15 @@ def _summarize(store: Store, task_id: str, bundle) -> dict:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--backend",
+        choices=tuple(SESSION_CLASSES),
+        default="python",
+        help="仿真后端（默认 python；matlab 需要 Simulink 许可证与 models/*.slx）",
+    )
+    args = parser.parse_args()
+
     bundle = load_all(REPO_ROOT / "configs")
 
     # ------------------------------------------------------------------
@@ -230,9 +254,10 @@ def main() -> int:
     closure = resolve_dependency_closure(model_dump, base_dir=REPO_ROOT)
 
     print(f"workspace : {workspace}")
+    print(f"backend   : {args.backend}")
     print("running...")
 
-    with PythonSession(base_dir=REPO_ROOT) as session:
+    with SESSION_CLASSES[args.backend](base_dir=REPO_ROOT) as session:
         result = scan(
             bundle.model,
             bundle.metrics,
@@ -241,7 +266,9 @@ def main() -> int:
             store,
             session=session,
             artifacts=artifacts,
-            execution_env_hash=_compute_execution_env_hash(bundle.model),
+            execution_env_hash=_compute_execution_env_hash(
+                bundle.model, sim_backend=session.backend_id
+            ),
             frozen_fingerprint=fast_fingerprint(closure),
             frozen_model_package_hash=model_package_hash(closure, model_dump),
             validate_fn=_make_validate_fn(bundle),

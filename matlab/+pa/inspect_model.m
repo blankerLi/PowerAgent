@@ -40,7 +40,12 @@ end
 missing_params = {};
 for i = 1:numel(param_names)
     name = param_names{i};
-    block_path = cfg.io_contract.injectable_params.(name).block_path;
+    % 与 apply_params.m 同一处理：block_path 的根段是占位根，须替换为实际模型名
+    % 后才是合法的绝对 Block Path（见 private/resolve_block_path.m）。校验的必须
+    % 是替换后的路径——否则本函数会对一个 apply_params.m 永远不会使用的路径报
+    % 存在性通过或失败，两种方向都是错的。
+    block_path = resolve_block_path(model_name, ...
+        cfg.io_contract.injectable_params.(name).block_path);
     if ~local_block_exists(block_path)
         missing_params{end+1} = sprintf('%s:%s', name, block_path); %#ok<AGROW>
     end
@@ -86,24 +91,39 @@ tf = (h ~= -1);
 end
 
 function names = local_logged_signal_names(model_name)
-% 仿真尚未运行，无法从 logsout 反查；改为检查模型内已配置为 "Log Signal" 的
-% 信号线（DataLogging='on'），其在仿真后进入 logsout 时使用的名称即
-% DataLoggingName（未自定义时取信号线 Name）。
+% 仿真尚未运行，无法从 logsout 反查；改为检查模型内已开启信号记录的**输出端口**，
+% 其在仿真后进入 logsout 时使用的名称即 DataLoggingName。
+%
+% 遍历 port 而不是 line（R2024a 实测修正）：
+%   本函数早先版本遍历 'Type','line' 并读 get_param(line,'DataLogging')。R2024a 上
+%   line 对象**没有** DataLogging 参数（实测 set_param/get_param 均报「line 没有名为
+%   'DataLogging' 的参数」），信号记录是**端口**属性。而那个版本的循环体套着
+%   try/catch，异常被静默吞掉，函数因此恒返回空 cell——后果不是报错而是
+%   「所有 output_signals 都被判为缺失」，进而 pa:ContractError、preflight 失败。
+%   静默失效比报错更难定位，此处记录该修正以免回退。
+%
+% DataLoggingName 的读法：
+%   端口的 DataLoggingNameMode 为 'Custom' 时 DataLoggingName 是自定义名；为
+%   'SignalName' 时 logsout 用信号线名。两种模式下 get_param(port,'DataLoggingName')
+%   都返回最终生效的名称，因此不需要按模式分支——但名称为空（信号线未命名且未
+%   自定义）时该端口无法在 logsout 里被按名取回，直接跳过而不是收进清单：收进去
+%   会让一个取不到的信号看起来校验通过了。
 names = {};
-lines = find_system(model_name, 'FindAll', 'on', 'LookUnderMasks', 'all', 'Type', 'line');
-for i = 1:numel(lines)
+ports = find_system(model_name, 'FindAll', 'on', 'LookUnderMasks', 'all', ...
+    'Type', 'port', 'PortType', 'outport');
+for i = 1:numel(ports)
     try
-        if strcmp(get_param(lines(i), 'DataLogging'), 'on')
-            nm = get_param(lines(i), 'DataLoggingName');
-            if isempty(nm)
-                nm = get_param(lines(i), 'Name');
-            end
+        if strcmp(get_param(ports(i), 'DataLogging'), 'on')
+            nm = get_param(ports(i), 'DataLoggingName');
             if ~isempty(nm)
-                names{end+1} = nm; %#ok<AGROW>
+                names{end+1} = char(nm); %#ok<AGROW>
             end
         end
     catch
-        % 并非全部 line 均具备 DataLogging 参数（如虚拟连接线），跳过
+        % 个别端口类型可能不具备 DataLogging 参数，跳过该端口。
+        % 注意：这个 catch 不能掩盖「全部端口都没有该参数」这种系统性问题——
+        % 那种情况下 names 为空，调用方会把全部 output_signals 报为缺失并抛
+        % pa:ContractError，正是期望的行为。
     end
 end
 end

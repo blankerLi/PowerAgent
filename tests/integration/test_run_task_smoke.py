@@ -168,6 +168,39 @@ def test_preflight_passed_all_assertions(outcome) -> None:
     assert result.stop_reason is not None
 
 
+def test_checkpoint1_lists_every_hard_constraint(bundle) -> None:
+    """Checkpoint 1 给人确认的硬约束必须与 schema 声明的完全一致，一条不少。
+
+    这里原本手写了一份名字清单，只有四项——`gain_margin_min` 在它作为第五条硬
+    约束被加进 `constraints.yaml` 时没有同步加进去。后果是人在确认"我要搜的是
+    这个任务"时看到的恰好是**修复前**的约束集，而那条缺失的约束正是参考扫描
+    暴露"约束集缺了一半稳定性判据"之后补上的那条。
+
+    判定链路不受影响（`eval/constraints.py` 直接从 `ConstraintsConfig` 读），
+    所以这个缺陷不会让任何结论出错——它只让人工确认环节看到的信息不完整，
+    而那恰恰是最难靠其他测试发现的一类问题。
+
+    断言的是"与 schema 字段集合相等"而不是"包含这五个名字"：后者在新增第六条
+    约束时仍会漏，前者不会。
+    """
+    from poweragent.controller.run_task import _checkpoint1_summary
+
+    summary = _checkpoint1_summary(bundle.task, bundle.metrics, bundle.constraints)
+
+    listed = set(summary["hard_constraints"])
+    declared = set(type(bundle.constraints.hard_constraints).model_fields)
+
+    assert listed == declared, (
+        f"Checkpoint 1 与 schema 不一致；缺失={sorted(declared - listed)} "
+        f"多余={sorted(listed - declared)}"
+    )
+    # 每条都要带齐四个字段，否则人看到的是残缺的约束描述。
+    for name, entry in summary["hard_constraints"].items():
+        assert set(entry) == {"value", "observable", "sense", "applies_to_tier"}, (
+            f"{name} 的字段不完整: {sorted(entry)}"
+        )
+
+
 def test_task_row_and_scenario_set_are_persisted(outcome, bundle) -> None:
     """`tasks` 行与 `scenario_set` 冻结行都已落库。"""
     result, store, _propose = outcome
@@ -222,6 +255,44 @@ def test_ledger_matches_the_single_source_of_truth(outcome) -> None:
     result, store, _propose = outcome
 
     assert result.engine_starts_used == store.sum_budget_units(result.task_id)
+
+
+def test_real_simulations_record_their_elapsed_time(outcome) -> None:
+    """真实跑过仿真的 `runs` 行必须落下 `elapsed_ms`，不能是 NULL。
+
+    这一列此前在所有运行里恒为 `NULL`：`close_run_ok()` 只写了 `waveform_ref` /
+    `observable_ref` / `ended_at` 三列，尽管它接收的是整个 `SimulationResult`
+    （其中 `elapsed_ms` 一直有值）。实测三次运行 24/24、45/45、34/34 行全空。
+
+    它不是装饰性的过程量，缺了它有三处直接后果：`preflight` 的
+    `check_budget_feasibility()` 拿不到实测的 `probe_single_run_s`（`model.yaml`
+    里 `max_wallclock_per_run_s: 180` 那句"无探针数据，按保守估计取 3 分钟"就是
+    这个缺口的产物）；README 主张的分层执行成本梯度无法从库里复算；
+    `find_cached_simulation()` 读回时的 `or 0` 兜底会把 `NULL` 变成 0，让缺失
+    看起来像"这次仿真不花时间"。
+
+    缓存命中的行不在断言范围内——那些行由 `run_task()` 显式传 `elapsed_ms=0`，
+    语义是"本次没有真的跑仿真"，是正确的 0 而不是缺失。
+    """
+    result, store, _propose = outcome
+
+    rows = store.connection.execute(
+        "SELECT run_id, elapsed_ms, cache_hit FROM runs "
+        "WHERE task_id=? AND status='done'",
+        (result.task_id,),
+    ).fetchall()
+    assert rows, "没有任何 done 状态的 runs 行"
+
+    real_runs = [r for r in rows if not r[2]]
+    assert real_runs, "没有非缓存命中的运行，本条断言失去意义"
+
+    missing = [r[0] for r in real_runs if r[1] is None]
+    assert not missing, f"这些真实运行的 elapsed_ms 为 NULL: {missing}"
+
+    # 至少有一次仿真耗时为正——全 0 说明写入了但值不对（例如错传了常量 0）。
+    assert any(r[1] > 0 for r in real_runs), (
+        f"全部真实运行的 elapsed_ms 都是 0: {[(r[0], r[1]) for r in real_runs]}"
+    )
 
 
 # --------------------------------------------------------------------------

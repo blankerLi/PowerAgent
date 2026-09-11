@@ -294,6 +294,48 @@ def _pick_worst_margin_value(values: object, *, prefer_min_abs: bool) -> float:
     return float(arr[0])
 
 
+def _pick_worst_gain_margin(values: object) -> float:
+    """从 `allmargin()` 的 `GainMargin` 字段挑出最坏（最小）的**正**线性比值。
+
+    ## 为什么 `GainMargin` 不能复用 `_pick_worst_margin_value(prefer_min_abs=True)`
+
+    真实 MATLAB `allmargin()` 在本系统的开环模型上返回的 `GainMargin` 是一个向量，
+    且**首元素恒为 0**（R2024a 实测，对应的 `GMFrequency` 首元素同样为 0）：
+
+        GainMargin  = [0  2.87938562613188  2.89136  2.89225  2.89250]
+        GMFrequency = [0  12083363.6  37542279  62737371  87898013]   rad/s
+
+    `GMFrequency = 0` 不是真实的相位穿越点，而是 MATLAB 对含两个积分器的系统在
+    直流处的边界记账：s→0 时开环增益 |T|→∞，于是 1/|T| → 0。它不表达任何稳定性
+    裕量。后续元素才是纯延迟使相位反复穿越 -180° 产生的真实穿越点，其中第二个
+    （最低频那个）就是最坏情形，与 Python 侧 `sim/backends/margin.py` 的
+    `margins_from_state_space()` 算出的 `gain_margin_linear=2.879385` 逐位一致
+    ——后者的频率网格从 1 Hz 起（`DEFAULT_FREQ_HZ`），结构性地看不到直流处那一项。
+
+    `_pick_worst_margin_value(prefer_min_abs=True)` 取绝对值最小的元素，在这个向量
+    上会选中首元素 `0`，紧接着被 `_extract_from_averaged_linearization()` 的
+    `gain_margin_linear <= 0.0` 分支判为提取失败。后果不是某个候选偶发失败，而是
+    **每一个**候选的裕量提取都失败——`phase_margin` 与 `gain_margin` 在
+    `extract_margin()` 里同步成败，于是两个指标一起作废，寻优拿不到任何裕量数据。
+
+    因此本函数按"正值"筛选后取最小：非正的线性增益比值不是合法裕量（`log10` 域外），
+    它们只可能来自上述直流记账，剔除它们恢复的正是两侧口径的一致。全部元素非正时
+    抛 `ValueError`，由 `extract_margin()` 统一转译为提取失败——不返回编造的默认值。
+
+    `allmargin()` 用 `Inf` 表示"相位从不穿越 -180°、增益裕量无限大"。`Inf` 是正值，
+    会被本函数保留并返回，随后由调用方的 `math.isfinite()` 检查拒绝——与本函数
+    改动前的行为一致，本函数不改变那条路径。
+    """
+
+    arr = np.atleast_1d(np.asarray(values, dtype=float))
+    positive = arr[arr > 0.0]
+    if positive.size == 0:
+        raise ValueError(
+            f"GainMargin 不含任何正的线性比值，无法换算为 dB: {arr.tolist()!r}"
+        )
+    return float(positive.min())
+
+
 def _extract_from_averaged_linearization(freq_response_ref: str) -> tuple[float, float]:
     """`primary_method='linear_analysis_on_averaged'` 分支：读取
     `matlab/+pa/run_linear_analysis.m` 以 `save(freq_response_path,
@@ -319,16 +361,15 @@ def _extract_from_averaged_linearization(freq_response_ref: str) -> tuple[float,
     phase_margin_deg = _pick_worst_margin_value(
         _mat_struct_field(margin_data, "PhaseMargin"), prefer_min_abs=True
     )
-    gain_margin_linear = _pick_worst_margin_value(
-        _mat_struct_field(margin_data, "GainMargin"), prefer_min_abs=True
+    # GainMargin 用专门的挑选函数：真实 allmargin() 输出的首元素是直流处的伪穿越
+    # （恒为 0），按绝对值最小挑会选中它并让每个候选都提取失败。详见
+    # _pick_worst_gain_margin() 的 docstring。
+    gain_margin_linear = _pick_worst_gain_margin(
+        _mat_struct_field(margin_data, "GainMargin")
     )
 
     if not math.isfinite(phase_margin_deg) or not math.isfinite(gain_margin_linear):
         raise ValueError("PhaseMargin/GainMargin 含非有限值")
-    if gain_margin_linear <= 0.0:
-        # allmargin() 用 Inf 表示"无穿越点/裕量无限大"；非正值不是合法的线性
-        # 增益比值（log10 域外），视为提取失败而非静默钳制。
-        raise ValueError(f"GainMargin 非正，无法换算为 dB: {gain_margin_linear!r}")
 
     gain_margin_db = 20.0 * math.log10(gain_margin_linear)
     return phase_margin_deg, gain_margin_db

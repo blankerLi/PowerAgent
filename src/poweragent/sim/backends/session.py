@@ -75,6 +75,11 @@ class PythonSession:
     读到的位置。
     """
 
+    #: 后端标识，与 `MatlabSession.backend_id` 同一用途：进入 `execution_env_hash`
+    #: 的输入字段集合，使两个后端的仿真结果不会互相命中 `simulation_key` 缓存。
+    #: 理由见 `sim/engine.py` 对该属性的说明。
+    backend_id: str = "python"
+
     def __init__(self, base_dir: str | Path = ".") -> None:
         self._base_dir = Path(base_dir)
         self._workdir: tempfile.TemporaryDirectory[str] | None = None

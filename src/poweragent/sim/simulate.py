@@ -505,6 +505,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from poweragent.config.schema import MetricsConfig, ModelConfig
+from poweragent.sim.backends.buck_model import STEP_TRIGGER_FRACTION
 from poweragent.sim.engine import MatlabSession
 from poweragent.sim.hashing import (
     fast_fingerprint,
@@ -652,14 +653,32 @@ def _field(result: Any, name: str) -> Any:
         return getattr(result, name)
 
 
-def _resolve_model_path(model_dump: Mapping[str, Any], variant: str) -> str:
-    """按场景声明的 `model_variant` 从 `model_cfg.model_dump()` 中取该变体的
-    `entry`，作为喂给 MATLAB 侧 `model_cfg_json` 的扁平 `model_path` 键
+def _resolve_model_path(
+    model_dump: Mapping[str, Any], variant: str, *, backend_id: str
+) -> str:
+    """按场景声明的 `model_variant` 与**后端**从 `model_cfg.model_dump()` 中取入口
+    文件路径，作为喂给后端 `model_cfg_json` 的扁平 `model_path` 键
     （`matlab/+pa/simulate_once.m` 期望的形状——见其文件头注释：
     "model_path（已由 Python 侧按 scenario 的 model_variant 解析出的入口文件
     路径）"）。`ModelConfig` 本身没有扁平的 `model_path` 字段，只有
-    `model_package.switching.entry` / `model_package.averaged.entry` 两个
-    按变体分列的字段，本函数是这两者之间的解析点。
+    `model_package.<variant>.entry` / `.slx_entry` 两组按变体分列的字段，本函数是
+    它们之间的解析点。
+
+    ## 为什么要按后端分支
+
+    两个后端仿真同一个电路的两种表示，入口是两个不同的文件（见 `config/schema.py`
+    的 `ModelVariantPackage` docstring）：Python 后端读 `entry`（`models/*.yaml`，
+    电路参数的声明式定义），MATLAB 后端读 `slx_entry`（`models/*.slx`）。把
+    `.yaml` 路径交给 `load_system` 或把 `.slx` 交给 `load_buck_spec` 都会失败，
+    且失败信息与真实原因相距很远，因此在这一处按 `backend_id` 显式选择。
+
+    `backend_id` 取自调用方持有的会话对象的 `backend_id` 类属性，与
+    `execution_env_hash` 用的是同一个值——"这次用了哪个后端"在系统里只有一个
+    事实来源。
+
+    MATLAB 后端而 `slx_entry` 缺失时显式报错，不回退到 `entry`：静默回退会把一个
+    `.yaml` 路径传给 `load_system()`，得到的是"找不到系统或文件"，看起来像模型
+    文件丢了，而真实原因是配置里没登记 `.slx`。
     """
     variant_section = model_dump.get("model_package", {}).get(variant)
     if not variant_section:
@@ -668,13 +687,93 @@ def _resolve_model_path(model_dump: Mapping[str, Any], variant: str) -> str:
             f"model_package 中没有对应的依赖闭包节（该变体可能未启用，例如 "
             f"averaged_model_required=false 时 model_package.averaged 留空）"
         )
+
+    if backend_id == "matlab":
+        slx_entry = variant_section.get("slx_entry")
+        if not slx_entry:
+            raise ValueError(
+                f"simulate(): MATLAB 后端需要 model_package.{variant}.slx_entry，"
+                f"但该字段为空。请在 model.yaml 中登记 .slx 入口"
+                f"（可用 matlab/build_models.m 从 {variant_section['entry']!r} 生成）"
+            )
+        return str(slx_entry)
+
     return str(variant_section["entry"])
 
 
-def _build_scenario_payload(scenario: ScenarioSpec, run_id: str) -> dict[str, Any]:
+# `margin_extraction.primary_method` → 该方法要求的模型变体。裕量提取的对象由**方法**
+# 决定，与触发它的场景声明的 `model_variant` 无关：`linear_analysis_on_averaged` 必须
+# 在平均模型上线性化（开关模型的右端项在每个开关点不连续，在其上 `linearize` 得到的
+# 是某个开关瞬间的线性化结果，没有环路裕量的意义），而
+# `freq_response_estimator_on_switching` 按定义就在开关模型上做频响估计。
+_MARGIN_METHOD_VARIANT = {
+    "linear_analysis_on_averaged": "averaged",
+    "freq_response_estimator_on_switching": "switching",
+}
+
+
+def _resolve_margin_model_path(
+    model_dump: Mapping[str, Any], primary_method: str, *, backend_id: str
+) -> str:
+    """按 `margin_extraction.primary_method` 解析裕量采集应使用的模型入口路径。
+
+    ## 为什么不能沿用场景的 `model_variant`
+
+    `matlab/+pa/run_linear_analysis.m` 的文件头写明：「本文件信任 model_path 已由
+    Python 侧按 margin_cfg.primary_method 解析出正确的模型变体入口……本文件自身不再
+    按 primary_method 在 switching/averaged 两个模型文件之间做二次选择」。也就是说
+    这个解析是 Python 侧的职责，而此前 `simulate()` / `simulate_batch()` 把**场景
+    变体**的 `model_cfg_json` 原样传了过去——需要采集裕量的评价场景用的是开关模型，
+    于是 `linear_analysis_on_averaged` 会在开关模型上执行 `linearize`。
+
+    这个缺陷此前被 Python 后端掩盖：`sim/backends/session.py` 的
+    `_run_linear_analysis()` 在内部自己改用 `model_package.averaged.entry`
+    （见该函数 docstring：「裕量始终在平均模型上提取，与场景声明的 model_variant
+    无关」）。两个后端因此对同一个输入做了不同的事，而 MATLAB 侧按契约不做纠正。
+    本函数把解析放回它该在的位置。
+    """
+    variant = _MARGIN_METHOD_VARIANT.get(primary_method)
+    if variant is None:  # pragma: no cover - config.schema 已把该字段限为二值枚举
+        raise ValueError(
+            f"simulate(): 未知的 margin_extraction.primary_method={primary_method!r}，"
+            f"取值应属于 {sorted(_MARGIN_METHOD_VARIANT)!r}"
+        )
+    return _resolve_model_path(model_dump, variant, backend_id=backend_id)
+
+
+def _build_scenario_payload(
+    scenario: ScenarioSpec, run_id: str, *, stop_time_s: float
+) -> dict[str, Any]:
     """从 `ScenarioSpec` 取 MATLAB 侧关心的电气量字段，附加 `run_id` 作为波形
     文件名提示（`matlab/+pa/simulate_once.m` 的 `local_resolve_waveform_path`
-    逻辑：`scenario_json` 提供非空 `run_id` 字段时取其值作为文件名主体）。
+    逻辑：`scenario_json` 提供非空 `run_id` 字段时取其值作为文件名主体），
+    以及 `step_trigger_s`（负载阶跃触发时刻）。
+
+    ## `step_trigger_s`：为什么由本函数算，而不是让后端各自算
+
+    `ScenarioSpec` 里没有阶跃时刻字段——`task.yaml` 的场景行只声明"从多少安培
+    跳到多少安培、以多快的斜率"，不声明"什么时候跳"。触发时刻是一条**全系统
+    共用的时间轴约定**：`STEP_TRIGGER_FRACTION * stop_time`。
+
+    Python 后端此前是在求解器内部自己算这个值（`averaged.py` / `switching.py`
+    各有一行 `t_step = STEP_TRIGGER_FRACTION * stop_time_s`），而 MATLAB 侧
+    `simulate_once.m` 的场景注入白名单里根本没有这个字段——模型无从得知何时
+    变载，`collect_signals.m` 也无从把它写进波形 MAT。后果是
+    `settling_time` / `overshoot` / `undershoot` 三个指标（窗口都是
+    `[step_trigger, step_trigger_plus_500us]`）在 MATLAB 后端下全部落
+    `no_step_detected`。
+
+    本函数把这个值算一次、放进 `scenario_json`，两个后端都从同一处取用：
+    MATLAB 侧写入模型工作区供负载阶跃块读取，并由 `collect_signals.m` 原样写进
+    波形 MAT。这样两份波形的阶跃时刻按构造相同，双后端一致性核对比较的才是
+    同一段瞬态。
+
+    `STEP_TRIGGER_FRACTION` 从 `sim.backends.buck_model` 导入：那个常量的语义
+    是"场景在时间轴上如何展开"，属于两个后端共用的场景约定而非某一个后端的
+    实现细节，因此它现在的位置（Python 后端的模型模块内）是次优的。此处选择
+    导入而不是搬家：搬动它会触碰 `buck_model.py` / `averaged.py` /
+    `switching.py` 及其测试，全部不在本次改动范围内，而导入一个常量是一行。
+    两处定义同一个数字才是真正要避免的（会漂移），导入不会。
     """
     return {
         "vin_v": scenario.vin_v,
@@ -682,6 +781,7 @@ def _build_scenario_payload(scenario: ScenarioSpec, run_id: str) -> dict[str, An
         "load_start_a": scenario.load_start_a,
         "load_end_a": scenario.load_end_a,
         "slew_a_per_us": scenario.slew_a_per_us,
+        "step_trigger_s": STEP_TRIGGER_FRACTION * stop_time_s,
         "run_id": run_id,
     }
 
@@ -739,12 +839,18 @@ def simulate(
     )
 
     # ---- 步骤 2：构造 payload 并调用 pa.simulate_once ----
-    model_path = _resolve_model_path(model_dump, scenario.model_variant)
+    model_path = _resolve_model_path(
+        model_dump, scenario.model_variant, backend_id=session.backend_id
+    )
     model_cfg_payload = {**model_dump, "model_path": model_path}
 
     model_cfg_json = json.dumps(model_cfg_payload)
     params_json = json.dumps(dict(candidate.parameters_si))
-    scenario_json = json.dumps(_build_scenario_payload(scenario, run_id))
+    scenario_json = json.dumps(
+        _build_scenario_payload(
+            scenario, run_id, stop_time_s=float(model_cfg.io_contract.solver.stop_time)
+        )
+    )
 
     raw_result = session.call(
         "pa.simulate_once", model_cfg_json, params_json, scenario_json, nargout=1
@@ -765,12 +871,21 @@ def simulate(
     # ---- 步骤 4：require_margin 场景内联裕量采集（软依赖：任务 11.1） ----
     observable_ref: str | None = None
     if status == "ok" and scenario.require_margin:
-        margin_cfg_json = json.dumps(
-            {"primary_method": metrics_cfg.margin_extraction.primary_method}
+        primary_method = metrics_cfg.margin_extraction.primary_method
+        margin_cfg_json = json.dumps({"primary_method": primary_method})
+        # 裕量采集用的 model_path 由 primary_method 决定，不是场景的 model_variant
+        # ——见 _resolve_margin_model_path() 的 docstring。
+        margin_model_cfg_json = json.dumps(
+            {
+                **model_dump,
+                "model_path": _resolve_margin_model_path(
+                    model_dump, primary_method, backend_id=session.backend_id
+                ),
+            }
         )
         margin_result = session.call(
             "pa.run_linear_analysis",
-            model_cfg_json,
+            margin_model_cfg_json,
             params_json,
             scenario_json,
             margin_cfg_json,
@@ -828,7 +943,7 @@ def inspect_model(
     的职责。
     """
     model_dump = model_cfg.model_dump(mode="json")
-    model_path = _resolve_model_path(model_dump, variant)
+    model_path = _resolve_model_path(model_dump, variant, backend_id=session.backend_id)
 
     model_cfg_json = json.dumps(
         {"model_path": model_path, "io_contract": model_dump["io_contract"]}
@@ -912,12 +1027,18 @@ def simulate_batch(
 
     request_payloads = []
     for (candidate, scenario), run_id in zip(requests, run_ids):
-        model_path = _resolve_model_path(model_dump, scenario.model_variant)
+        model_path = _resolve_model_path(
+            model_dump, scenario.model_variant, backend_id=session.backend_id
+        )
         request_payloads.append(
             {
                 "model_path": model_path,
                 "params": dict(candidate.parameters_si),
-                "scenario": _build_scenario_payload(scenario, run_id),
+                "scenario": _build_scenario_payload(
+                    scenario,
+                    run_id,
+                    stop_time_s=float(model_cfg.io_contract.solver.stop_time),
+                ),
             }
         )
     requests_json = json.dumps(request_payloads)
@@ -960,13 +1081,21 @@ def simulate_batch(
             continue
 
         run_id = run_ids[i]
-        model_path = request_payloads[i]["model_path"]
         params_json = json.dumps(request_payloads[i]["params"])
         scenario_json = json.dumps(request_payloads[i]["scenario"])
-        margin_model_cfg_json = json.dumps({**model_dump, "model_path": model_path})
-        margin_cfg_json = json.dumps(
-            {"primary_method": metrics_cfg.margin_extraction.primary_method}
+        primary_method = metrics_cfg.margin_extraction.primary_method
+        # 与 simulate() 步骤 4 同一处理：model_path 由 primary_method 决定，不沿用
+        # request_payloads[i]["model_path"]（那是场景变体的入口）。见
+        # _resolve_margin_model_path() 的 docstring。
+        margin_model_cfg_json = json.dumps(
+            {
+                **model_dump,
+                "model_path": _resolve_margin_model_path(
+                    model_dump, primary_method, backend_id=session.backend_id
+                ),
+            }
         )
+        margin_cfg_json = json.dumps({"primary_method": primary_method})
 
         margin_result = session.call(
             "pa.run_linear_analysis",
