@@ -32,11 +32,19 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# 默认排除 live_llm：那些测试会真实调用 LLM，慢、消耗额度、且可能因网络波动而失败，
-# 不该出现在默认测试路径里。需要时显式选择：`pytest -m live_llm`（命令行的 -m 会
-# 覆盖这里的设置）。仅靠"有没有 API Key"来决定跑不跑是不够的——本地配了 .env 之后
-# 每次跑测试都会连网。
-addopts = ["--strict-markers", "-q", "-m", "not live_llm"]
+# 默认排除 live_llm 与 matlab：两者都慢、都依赖本仓库之外的资源，不该出现在默认
+# 测试路径里。需要时显式选择：`pytest -m live_llm` / `pytest -m matlab`（命令行的
+# -m 会覆盖这里的设置）。
+#
+# live_llm：会真实调用 LLM，消耗额度、且可能因网络波动而失败。
+# matlab：启动 MATLAB Engine 约 20 s，开关模型首次仿真约 29 s（含 Simulink 首次编译，
+#   同一会话内后续调用降到 0.5~1 s），整组实测约 72 s；还要签出 Simulink 与
+#   Simulink Control Design 两个许可证。
+#
+# 两者都不靠"环境里有没有"来决定跑不跑——那不够。本地配了 .env 之后每次跑测试都会
+# 连网；本地装了 MATLAB 之后每次跑测试都会多花三分钟并占用一个许可证席位。
+# 默认路径应当是「45 秒内跑完、只依赖本仓库」的那 199 项。
+addopts = ["--strict-markers", "-q", "-m", "not live_llm and not matlab"]
 # 不按类名收集测试。本项目的测试全是函数式，而默认的 `Test*` 规则会把领域类型
 # （如 agent.state.TestedPoint）误认作测试类并发出收集警告。改配置比给领域类型加
 # 一个 `__test__ = False` 干净：领域类型不该知道测试框架的存在。
