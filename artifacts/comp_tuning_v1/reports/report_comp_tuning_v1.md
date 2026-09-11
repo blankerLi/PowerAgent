@@ -11,10 +11,10 @@
 
 
 在冻结场景集的评价层上，存在满足全部硬约束且跑完整个评价集的候选。其中主目标
-（`settling_time`）取值最优的一个为 `417a617a5718f754`，其参数为
-`ccomp` = 1e-10 · `rcomp` = 2.848e+04。
+（`settling_time`）取值最优的一个为 `534a080c8e465d60`，其参数为
+`ccomp` = 1.52e-10 · `rcomp` = 2.848e+04。
 
-该候选在评价集上的 worst-case 主目标取值为 5.2，任务写下的达标线为 10。
+该候选在评价集上的 worst-case 主目标取值为 6.8，任务写下的达标线为 10。
 
 采纳与否是 Checkpoint 3 的人工决定，本报告只提供依据，不给出采纳结论。
 
@@ -25,15 +25,15 @@
 | `task_id` | `comp_tuning_v1` |
 | 轨道 | 仿真轨（`simulation_only = true`） |
 | `task_kind` | `optimize` |
-| `model_package_hash` | `f0b1f40f335356bb72ccebd4a972d90b5be84baac3051a75d731eff8d94ec78f` |
+| `model_package_hash` | `6e8596135c4d35ab220fa5157712ed4d8283793f7f43768a7dab445c630e9e04` |
 | `metrics_hash` | `126caea466c9a2aef14a551a22215264f2757bdf9efcc87345be89a0da246532` |
 | `constraints_hash` | `b781b2ccdb90345fe08ea3fee09f0eabc1e7ebfd69f9e8d8b4d6b5f49511ab34` |
 | `scenario_set_hash` | `776797c3955248236c76583f1925025ea09c7d307ad5a0438bfde438600247d9` |
-| `execution_env_hash` | `754b0d8858c25cdcc987dbddda3c25ea5bfafb9ea53a2c44472ad7f6282255b6` |
+| `execution_env_hash` | `bad0ca35fec58f0f7083fbc4c098c382df0e3b5e79907c96269516772c41dd2f` |
 | `calibration_hash` | `不可用` |
 | 预算上限 | 200 次引擎启动 |
-| 起始时间 | 2026-09-09T09:51:38Z |
-| 结束时间 | 2026-09-09T09:59:23Z |
+| 起始时间 | 2026-09-11T02:07:16Z |
+| 结束时间 | 2026-09-11T02:14:17Z |
 
 
 ### 冻结场景集
@@ -56,27 +56,6 @@
 
 ### 第 1 名
 
-- `candidate_id`：`417a617a5718f754`
-- 参数：`ccomp` = 1e-10 · `rcomp` = 2.848e+04
-- worst-case `settling_time`：5.2
-- 次目标：`phase_margin` = 73.02
-
-逐场景指标：
-
-| `scenario_id` | `metric_id` | 取值 | 有效 | 无效原因 |
-| --- | --- | --- | --- | --- |
-| `eval_vin_min_step_max` | `gain_margin` | 9.186 | 是 | — |
-| `eval_vin_min_step_max` | `obs.vout_max` | 0.8024 | 是 | — |
-| `eval_vin_min_step_max` | `obs.vout_min` | 0.7843 | 是 | — |
-| `eval_vin_min_step_max` | `output_ripple` | 0.00138 | 是 | — |
-| `eval_vin_min_step_max` | `overshoot` | 0.00238 | 是 | — |
-| `eval_vin_min_step_max` | `phase_margin` | 73.02 | 是 | — |
-| `eval_vin_min_step_max` | `phase_peak_current` | 46.9 | 是 | — |
-| `eval_vin_min_step_max` | `settling_time` | 5.2 | 是 | — |
-| `eval_vin_min_step_max` | `undershoot` | 0.01569 | 是 | — |
-
-### 第 2 名
-
 - `candidate_id`：`534a080c8e465d60`
 - 参数：`ccomp` = 1.52e-10 · `rcomp` = 2.848e+04
 - worst-case `settling_time`：6.8
@@ -95,6 +74,27 @@
 | `eval_vin_min_step_max` | `phase_peak_current` | 46.01 | 是 | — |
 | `eval_vin_min_step_max` | `settling_time` | 6.8 | 是 | — |
 | `eval_vin_min_step_max` | `undershoot` | 0.01639 | 是 | — |
+
+### 第 2 名
+
+- `candidate_id`：`baba37b4b735bc03`
+- 参数：`ccomp` = 1.52e-10 · `rcomp` = 1.874e+04
+- worst-case `settling_time`：7.2
+- 次目标：`phase_margin` = 59.39
+
+逐场景指标：
+
+| `scenario_id` | `metric_id` | 取值 | 有效 | 无效原因 |
+| --- | --- | --- | --- | --- |
+| `eval_vin_min_step_max` | `gain_margin` | 12.82 | 是 | — |
+| `eval_vin_min_step_max` | `obs.vout_max` | 0.804 | 是 | — |
+| `eval_vin_min_step_max` | `obs.vout_min` | 0.7814 | 是 | — |
+| `eval_vin_min_step_max` | `output_ripple` | 0.001172 | 是 | — |
+| `eval_vin_min_step_max` | `overshoot` | 0.00405 | 是 | — |
+| `eval_vin_min_step_max` | `phase_margin` | 59.39 | 是 | — |
+| `eval_vin_min_step_max` | `phase_peak_current` | 47.51 | 是 | — |
+| `eval_vin_min_step_max` | `settling_time` | 7.2 | 是 | — |
+| `eval_vin_min_step_max` | `undershoot` | 0.01857 | 是 | — |
 
 ### 第 3 名
 
@@ -143,15 +143,15 @@
 
 | 项 | 寻优结果 |
 | --- | --- |
-| `candidate_id` | `417a617a5718f754` |
-| worst-case `settling_time` | 5.2 |
+| `candidate_id` | `534a080c8e465d60` |
+| worst-case `settling_time` | 6.8 |
 | 达标线 | 10 |
 
 ## 七、关键波形图
 
-### 最佳候选 `417a617a5718f754` 在评价层的时域波形
+### 最佳候选 `534a080c8e465d60` 在评价层的时域波形
 
-![最佳候选 `417a617a5718f754` 在评价层的时域波形](../plots/waveform_run_12af3127811f423baba3d3a00c30580a.png)
+![最佳候选 `534a080c8e465d60` 在评价层的时域波形](../plots/waveform_run_c4b31e32553541ccae19eec9d61527c1.png)
 
 ### 参考扫描响应面
 
@@ -162,11 +162,11 @@
 
 | 项 | 值 |
 | --- | --- |
-| 起始时间 | 2026-09-09T09:51:38Z |
-| 结束时间 | 2026-09-09T09:59:23Z |
-| 引擎启动 | 43 / 200 |
-| `runs` 行数 | 共 29 · 完成 29 · 失败 0 · 缓存命中 0 |
-| LLM 调用 | 3 次 · 5.6e+04 token · 结果分布 {'ok': 3} |
+| 起始时间 | 2026-09-11T02:07:16Z |
+| 结束时间 | 2026-09-11T02:14:17Z |
+| 引擎启动 | 67 / 200 |
+| `runs` 行数 | 共 45 · 完成 45 · 失败 0 · 缓存命中 0 |
+| LLM 调用 | 4 次 · 6.269e+04 token · 结果分布 {'ok': 4} |
 | 人工介入 | `cp1` = 0 · `cp2` = 0 · `cp3` = 0 · `other` = 0 |
 | 被拒候选 | 0 |
 
@@ -176,7 +176,7 @@
 | 日志字段 | 值 |
 | --- | --- |
 | 首次可行解轮次 | 0 |
-| 可行候选率 | 0.9333 |
+| 可行候选率 | 0.9565 |
 | 重复率 | 0 |
 
 

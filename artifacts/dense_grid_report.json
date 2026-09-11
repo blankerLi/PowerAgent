@@ -1011,8 +1011,8 @@
   ],
   "feasible_points": 36,
   "figures": [
-    "artifacts/dense_grid/20260909T092500Z/figures/response_surface_primary.png",
-    "artifacts/dense_grid/20260909T092500Z/figures/response_surface_phase_margin.png"
+    "artifacts/dense_grid/20260910T073647Z/figures/response_surface_primary.png",
+    "artifacts/dense_grid/20260910T073647Z/figures/response_surface_phase_margin.png"
   ],
   "grid_best": {
     "ccomp": 1e-10,
@@ -1025,10 +1025,10 @@
   "note": "参考扫描的点位与取值记录。用途限于响应面可视化与解质量对照；按 R23.5 不用于 Regret 体系或搜索效率对照。",
   "objective_direction": "minimize",
   "objective_metric_id": "settling_time",
-  "recorded_at_utc": "2026-09-09T09:28:32+00:00",
+  "recorded_at_utc": "2026-09-10T07:41:45+00:00",
   "requested_point_count": 144,
   "scan_function": "dense_grid_scan",
   "scanned_points": 144,
-  "task_id": "dense_grid_7e2eb9908ffc4df08fecf11d2c609815",
-  "workspace": "artifacts/dense_grid/20260909T092500Z"
+  "task_id": "dense_grid_d260ec28a2574b8bb676576ad5c2acaa",
+  "workspace": "artifacts/dense_grid/20260910T073647Z"
 }

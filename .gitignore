@@ -45,6 +45,12 @@ artifacts/*
 !.env.example
 
 # MATLAB / Simulink
+# 注意 models/*.slx **不**在忽略列表里，尽管它是二进制且由
+# matlab/build_slx_model.m 生成。理由与上面两份证据资产同类：它被 model.yaml 的
+# model_package.<variant>.slx_entry 登记、计入 model_package_hash，不入库则
+# 任何人 clone 后连闭包都解析不出来、preflight 直接失败。
+# 「由脚本生成」是当前的工作方式，不是文件系统强制的约束——手工改了 .slx 而不改
+# 生成脚本，哈希也必须变，这正是把它计入闭包的意义。
 *.slxc
 slprj/
 *.autosave

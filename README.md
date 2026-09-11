@@ -4,7 +4,8 @@ LLM 驱动的多相 Buck 供电模块参数寻优 Agent。
 
 在一个**昂贵、会失败、带硬约束**的仿真环境里，由大模型提出候选参数、由确定性代码做全部安全判定与判分，闭环搜索满足电气约束的设计点，并产出可审计的报告。
 
-199 项测试（约 45 秒，无需 MATLAB），CI 每次 push 全量执行。
+220 项测试（约 47 秒，无需 MATLAB），CI 每次 push 全量执行。另有 8 项跨后端契约测试需
+Simulink 许可证，`pytest -m matlab` 显式选择。
 
 ## 三个可复算的结果
 
@@ -76,7 +77,7 @@ LLM 驱动的多相 Buck 供电模块参数寻优 Agent。
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest                              # 199 passed，约 45 秒，无需 MATLAB 与 API Key
+python -m pytest                              # 220 passed，约 47 秒，无需 MATLAB 与 API Key
 ```
 
 跑真实寻优需要 DeepSeek API Key：
@@ -95,6 +96,22 @@ python scripts/margin_cross_check.py                    # 裕量双方法交叉�
 python scripts/dual_model_consistency.py                # 平均/开关模型一致性
 ```
 
+MATLAB/Simulink 后端（需 Simulink + Simulink Control Design 许可证）：
+
+```bash
+python scripts/build_slx_models.py            # 从 models/*.yaml 生成两个 .slx
+pytest -m matlab                              # 8 项跨后端契约与一致性测试，约 72 秒
+python scripts/llm_search_run.py --backend matlab
+```
+
+`.slx` 由 `matlab/build_slx_model.m` 以编程方式生成（纯 Simulink 基本块，不依赖
+Simscape）：进版本控制的是生成脚本，模型的每处参数与连线都可审查，而不是一个不可
+diff 的二进制文件。`.slx` 本身仍计入 `model_package_hash`——手工改了它，旧结论一样
+失效。计入的是它的**规范化字节**而不是原始字节：`.slx` 的原始字节对重复生成不确定
+（同一份输入生成 4 次得到 4 个不同 sha256，差异全在文件元数据、文档 UUID、块 UUID
+与编辑器状态里），直接哈希会让这个门禁测的是"文件有没有被重新写过"而不是"模型是否
+真的变了"。
+
 渲染报告（示例产出见 [`artifacts/comp_tuning_v1/reports/`](artifacts/comp_tuning_v1/reports/)）：
 
 ```bash
@@ -112,9 +129,19 @@ poweragent report --task comp_tuning_v1
 
 **分层执行的成本梯度是真实的**：平均模型 7.5 ms、开关模型 360 ms，相差 48 倍。前者不含开关纹波（稳态峰峰 < 10 µV），后者产生真实纹波（约 1.8 mV）与相电流三角波（单相峰峰约 11.7 A，与解析值一致），并使相电流峰值抬高约 5 A——所以 `peak_current_max` 只在评价层才有实际约束力。
 
+Simulink 后端的同一梯度是 0.5 s（平均）vs 0.5~1 s（开关，稳态）——两者接近，因为在 Simulink 上首次编译（开关模型 29 s）才是主要成本，之后的每次仿真都很便宜。这个数最初被误判为"每次 31 s"，原因是 `runs.elapsed_ms` 没有入库（见下），只能靠外部计时，而每次外部计时都在新 engine 会话里做。
+
 **两个保真度描述同一个电路**：稳态输出偏差 0.0048%（容差 0.5%），负载阶跃下冲偏差 8.25%（容差 10%）。这份核对是分层执行的前提证据，并已抓到过一个真实的建模错误（采样延迟漏了相数）。
 
 **裕量提取有两条独立路径且完全一致**：数值状态空间线性化与手写解析传递函数，在四个探测点（含一个不可行点）上偏差为 0.0° / 0.0 dB。
+
+**两个仿真后端描述同一个电路**（`pytest -m matlab`，需 Simulink 许可证）：同一份 `models/buck4ph_*.yaml` 既是 Python 后端的入口，也是生成 `.slx` 的唯一参数源。裕量上 Simulink 的 `linearize`+`allmargin` 与 Python 手写状态空间偏差 ≤0.0005°/0.0005 dB；开关模型时域上 `settling_time` 与 `phase_peak_current` 偏差 0.00%、`undershoot` 0.52%，纹波尺度的 `output_ripple`/`overshoot` 偏差 6~8%（mV 级量叠在峰峰 13.7 mV 的开关纹波上，200 ns 抽取下每个纹波周期只有 2.5 个采样点）。
+
+这条对照抓到过一个只在纹波尺度上暴露的 bug：开关模型的载波相位判据踩在浮点边界上，`mod()` 在理想周期起点给出 `1-1e-16` 而非 `0+ε`，导致某一相每隔若干周期漏一次开通、纹波峰峰翻倍。当时 `output_ripple` 差 348%，而 `settling_time` 与 `phase_peak_current` 只差约 2%——只看瞬态量发现不了。
+
+**模型包哈希测的是"模型是否真的变了"，不是"文件有没有被重新写过"**：`.slx` 的原始字节对重复生成不确定（同一份输入生成 4 次得到 4 个不同 sha256），因此计入闭包的是规范化字节——排除文件元数据与编辑器界面状态条目，剔除 UUID 与时间戳。21 项单元测试（不需要 MATLAB）双向守护：对元数据/UUID/时间戳/条目顺序/缩略图不敏感，对块参数、块名、连线端口、求解器类型、条目增删改名必须敏感。这条很重要——一个会因为"重跑了一次生成脚本"就误报的门禁，最终会被人习惯性地绕过，那时真正的模型变更也跟着被放过去。
+
+**每次仿真的耗时落库**：`runs.elapsed_ms` 此前在所有运行里恒为 `NULL`——`close_run_ok()` 只写了产物引用与结束时间，漏了耗时列，两个后端都受影响。它不是装饰性的过程量：`preflight` 的预算可行性检查需要实测的单次耗时，分层执行的成本梯度也要靠它才能从库里复算，而缺失时 `find_cached_simulation()` 的 `or 0` 兜底会把 `NULL` 读成 0、让缺失看起来像"这次仿真不花时间"。这个缺口还直接导致了上面那处 Simulink 耗时的误判。
 
 **指标实现经反向核对**：用解析已知的构造波形按 `metrics.yaml` 的文字定义手算期望值再比对实现——这个顺序抓到了一个滤波器边界伪影 bug（稳态恒定 0.804 V 被报出 0.402 V 的纹波）。反过来做（读实现写期望）抓不到。
 
@@ -139,9 +166,9 @@ CI 每次都重跑这两个脚本并比对哈希。这一步不是在检查代�
 
 - 阶段 1 为**仿真轨**（`simulation_only=true`）。未做实测校准，结论不足以支撑打板。
 - 以下模块在范围裁剪中被明确移除，非"待补全"：模型校准、工程知识检索、鲁棒性三维扫描、寄生参数敏感性、双模型一致性的运行期门禁与并行仿真回退。
-- MATLAB/Simulink 通路为可选高保真后端。所在环境为共享网络许可证且并发常满，主链路走 Python 仿真后端；因此 MATLAB 交叉验证由"平均/开关双模型互核"这条替代路径承担。
+- MATLAB/Simulink 通路已接通并端到端验证，两个后端并列（`--backend {python,matlab}`，默认 `python`）。默认 `python` 的理由是"不改变既有结论"——`artifacts/` 下已入库的记录都是 Python 后端产出的，而 `execution_env_hash` 含 `sim_backend`，两个后端的结果按设计不互相命中缓存。参考扫描仍在 Python 后端，但阻力比最初估计的小得多：Simulink 开关模型单次首次 29 s（几乎全是首次编译）、稳态 0.5~1 s，288 次的纯仿真时间是几分钟量级而非最初估的 2.5 小时。详见 [`docs/design/matlab_backend_migration.md`](docs/design/matlab_backend_migration.md)。
 - 两处数值偏差已测量并记录：开关模型在 20 ns 显式欧拉步长下对下冲高估约 3%（相对 5 ns 的收敛值），方向保守；其初始状态不是精确的稳态相位，在 1 ms 仿真时长下残余影响低于 0.5%。双模型容差因此设为 10%，构成写在配置注释里。
-- 频域裕量用精确纯延迟表达采样保持，时域求解用一阶滞后近似它。这个分裂是有意的：纯延迟会把 ODE 变成延迟微分方程，而一阶滞后的相位下界是 −90°，会让增益裕量在数学上无界、进而被下游判为提取失败。
+- 频域裕量用精确纯延迟表达采样保持，时域求解用一阶滞后近似它。这个分裂是有意的：纯延迟会把 ODE 变成延迟微分方程，而一阶滞后的相位下界是 −90°，会让增益裕量在数学上无界、进而被下游判为提取失败。**这个分裂只存在于 Python 后端**：Simulink 原生支持带延迟的连续求解，`buck4ph_averaged.slx` 的时域与频域用同一个 Transport Delay。代价是它与 Python 平均模型的时域有一处系统性差异（真延迟 vs 一阶滞后），实测在本工况下影响 0.02%。
 - 对照实验的样本量小（LLM 3 次、随机 5 次），设计空间只有 144 点。数字支持"在本任务上 LLM 稳定命中最优而均匀随机不能"，不支持更强的一般化。
 - `poweragent report --approve` 的审批链未打通（`_compute_current_result_hash()` 未实现），不影响报告渲染。
 - CLI 的数据库路径固定为仓库根的 `runs.db`（design.md 未定义 `--db` 选项，不凭空新增一个未登记的接口面），而寻优脚本把库写在 `artifacts/<脚本>/<时间戳>/` 下以便多次运行互不覆盖。两者之间需要手工复制一次，见上面的命令。
