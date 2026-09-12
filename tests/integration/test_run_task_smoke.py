@@ -475,3 +475,445 @@ def test_report_waveform_plot_matches_the_best_candidate(
 
     # 报告里的引用指向那张图，且用相对路径（连同 artifacts/ 复制后仍显示得出来）。
     assert f"../plots/{plots[0].name}" in text
+
+
+# --------------------------------------------------------------------------
+# Checkpoint 3：最终推荐审批与 result_hash 绑定
+# --------------------------------------------------------------------------
+#
+# 同样挂在这个文件：`result_hash` 的 9 键里有 7 个要从一个真跑过仿真的库里聚合
+# 出来（`worst_case` 需要评价层跑完、`per_scenario` 需要 `metric_results` 有行），
+# 而 `outcome` fixture 已经提供了这样一个库。
+#
+# 这一组的核心不是"能算出一个哈希"，而是**这个哈希对什么敏感、对什么不敏感**。
+# `approvals.result_hash` 的全部价值在于 `apply` 时重算比对能挡住误签（CP-10），
+# 因此两个方向都必须测：
+#
+#   该敏感的敏感   —— 候选的评价结果变了，哈希必须变（否则闸门形同虚设）
+#   该不敏感的不敏感 —— 过程量（`elapsed_ms`/`cache_hit`/`budget_units`）变了，
+#                      哈希不得变（否则重跑一次同一候选就把审批作废了，
+#                      design.md §5.3.1 明确把它们排除在重算范围外）
+#
+# 只测前者会漏掉一个很实际的失效：把整行 `runs` 都塞进哈希也能让前者通过，但那样
+# 每次缓存命中都会改变哈希。
+
+
+def _clone_store(store: Store, tmp_path: Path, name: str = "clone.db") -> Store:
+    """把库整份拷到 `tmp_path` 上，供破坏性断言使用。
+
+    用 sqlite 的 backup API 而不是复制文件：库开在 WAL 模式下
+    （`ddl.sql` 的 `PRAGMA journal_mode=WAL`），直接 copy 主文件会漏掉还留在
+    `-wal` 里尚未 checkpoint 的页，拷出来的副本可能比源库旧。
+
+    `outcome` 是 module 作用域的 fixture，本组里改数据的断言若直接改源库，
+    执行顺序就会变成隐式依赖——先跑的把库改了，后跑的看到的就不是同一个库。
+    """
+    import sqlite3
+
+    destination = tmp_path / name
+    connection = sqlite3.connect(destination)
+    try:
+        store.connection.backup(connection)
+    finally:
+        connection.close()
+    return Store(destination)
+
+
+def _evaluation_run_ids(store: Store, task_id: str, candidate_id: str) -> list[str]:
+    return [
+        row[0]
+        for row in store.connection.execute(
+            "SELECT r.run_id FROM runs r "
+            "JOIN scenario_set s ON s.task_id = r.task_id "
+            "                   AND s.scenario_id = r.scenario_id "
+            "WHERE r.task_id=? AND r.candidate_id=? AND s.tier='evaluation'",
+            (task_id, candidate_id),
+        ).fetchall()
+    ]
+
+
+def test_result_hash_is_stable_across_recomputation(outcome, bundle) -> None:
+    """同一库状态重算两次得到同一个哈希，且不截断。
+
+    这是"`apply` 前重算比对"的前提：若重算本身不稳定，比对永远失败，那道闸门就
+    只能被绕过。
+    """
+    from poweragent.report.context import compute_result_hash
+
+    result, store, _propose = outcome
+    kwargs = {"metrics_cfg": bundle.metrics, "constraints_cfg": bundle.constraints}
+
+    first = compute_result_hash(
+        result.task_id, store, result.best_candidate_id, **kwargs
+    )
+    second = compute_result_hash(
+        result.task_id, store, result.best_candidate_id, **kwargs
+    )
+
+    assert first == second, "同一库状态重算两次应得同一哈希"
+    assert len(first) == 64, "sha256 十六进制应为 64 字符（登记表中只有 candidate_id 截断）"
+    assert first == first.lower(), "应为小写十六进制"
+
+
+def test_result_hash_changes_when_the_primary_metric_changes(
+    outcome, bundle, tmp_path
+) -> None:
+    """主目标指标的取值变了，哈希必须变。
+
+    改的是 `settling_time`，它既是 `objective.primary.metric_id`（进 `worst_case`
+    一项）也是 `per_scenario` 里的一行，两条路径都会带动哈希变化。
+    """
+    from poweragent.report.context import compute_result_hash
+
+    result, store, _propose = outcome
+    clone = _clone_store(store, tmp_path, "primary.db")
+    kwargs = {"metrics_cfg": bundle.metrics, "constraints_cfg": bundle.constraints}
+
+    before = compute_result_hash(
+        result.task_id, clone, result.best_candidate_id, **kwargs
+    )
+
+    run_ids = _evaluation_run_ids(clone, result.task_id, result.best_candidate_id)
+    assert run_ids, "最佳候选应有评价层的 runs 行"
+    clone.connection.executemany(
+        "UPDATE metric_results SET value = value + 1.0 "
+        "WHERE run_id=? AND metric_id='settling_time'",
+        [(run_id,) for run_id in run_ids],
+    )
+    clone.connection.commit()
+
+    after = compute_result_hash(
+        result.task_id, clone, result.best_candidate_id, **kwargs
+    )
+    assert after != before, "主目标取值变化后 result_hash 必须变"
+
+
+def test_result_hash_changes_when_a_non_primary_metric_changes(
+    outcome, bundle, tmp_path
+) -> None:
+    """非主目标指标变了，哈希也必须变。
+
+    这条比上一条更能定位问题：`output_ripple` 不参与 `worst_case`，只出现在
+    `per_scenario` 里。若只有上一条通过而这条失败，说明 `per_scenario` 根本没
+    进哈希——而它恰恰是"这个候选在各场景上的完整证据"这一层。
+    """
+    from poweragent.report.context import compute_result_hash
+
+    result, store, _propose = outcome
+    clone = _clone_store(store, tmp_path, "secondary.db")
+    kwargs = {"metrics_cfg": bundle.metrics, "constraints_cfg": bundle.constraints}
+
+    before = compute_result_hash(
+        result.task_id, clone, result.best_candidate_id, **kwargs
+    )
+
+    run_ids = _evaluation_run_ids(clone, result.task_id, result.best_candidate_id)
+    clone.connection.executemany(
+        "UPDATE metric_results SET value = value * 1.5 "
+        "WHERE run_id=? AND metric_id='output_ripple'",
+        [(run_id,) for run_id in run_ids],
+    )
+    clone.connection.commit()
+
+    after = compute_result_hash(
+        result.task_id, clone, result.best_candidate_id, **kwargs
+    )
+    assert after != before, "per_scenario 里任一指标取值变化后 result_hash 必须变"
+
+
+def test_result_hash_ignores_process_metrics(outcome, bundle, tmp_path) -> None:
+    """过程量（`elapsed_ms` / `cache_hit` / `budget_units`）变化不得改变哈希。
+
+    design.md §5.3.1 把这三列明确排除在重算范围外，理由写在同一句里："重跑同一
+    候选不应作废审批"。缓存命中会让 `cache_hit=1`、`budget_units=0`、
+    `elapsed_ms` 归零，若它们进了哈希，一次重跑就能让先前的审批失效——那时这道
+    闸门拦下的不是误签，而是正常的复用。
+    """
+    from poweragent.report.context import compute_result_hash
+
+    result, store, _propose = outcome
+    clone = _clone_store(store, tmp_path, "process.db")
+    kwargs = {"metrics_cfg": bundle.metrics, "constraints_cfg": bundle.constraints}
+
+    before = compute_result_hash(
+        result.task_id, clone, result.best_candidate_id, **kwargs
+    )
+
+    clone.connection.execute(
+        "UPDATE runs SET elapsed_ms = COALESCE(elapsed_ms, 0) + 9999, "
+        "                cache_hit = 1, "
+        "                budget_units = budget_units + 7 "
+        "WHERE task_id=? AND candidate_id=?",
+        (result.task_id, result.best_candidate_id),
+    )
+    clone.connection.commit()
+
+    after = compute_result_hash(
+        result.task_id, clone, result.best_candidate_id, **kwargs
+    )
+    assert after == before, (
+        "过程量不在 result_hash 的重算范围内，它们变化时哈希必须保持不变"
+    )
+
+
+def test_approve_rejects_an_unknown_candidate(outcome, bundle) -> None:
+    """审批一个不在 `candidates` 表里的 id 必须被拒。"""
+    from poweragent.report.context import (
+        ResultHashUnavailableError,
+        compute_result_hash,
+    )
+
+    result, store, _propose = outcome
+
+    with pytest.raises(ResultHashUnavailableError, match="不在 candidates 表中"):
+        compute_result_hash(
+            result.task_id,
+            store,
+            "cand_does_not_exist",
+            metrics_cfg=bundle.metrics,
+            constraints_cfg=bundle.constraints,
+        )
+
+
+def test_approve_rejects_an_infeasible_candidate(outcome, bundle, tmp_path) -> None:
+    """在某个评价场景上不可行的候选没有可绑定的结果，审批必须被拒。
+
+    这是 worst-case 聚合的 `HAVING` 完备性过滤在审批路径上的延伸：那条 SQL 已经
+    把不可行与未跑完的候选排除在结果集之外，因此"算不出 worst_case"与"不该被
+    审批"在这里是同一件事，不需要另写一套可行性判断。
+    """
+    from poweragent.report.context import (
+        ResultHashUnavailableError,
+        compute_result_hash,
+    )
+
+    result, store, _propose = outcome
+    clone = _clone_store(store, tmp_path, "infeasible.db")
+
+    clone.connection.execute(
+        "UPDATE constraint_results SET feasible = 0 WHERE candidate_id=?",
+        (result.best_candidate_id,),
+    )
+    clone.connection.commit()
+
+    with pytest.raises(ResultHashUnavailableError, match="完备性过滤"):
+        compute_result_hash(
+            result.task_id,
+            clone,
+            result.best_candidate_id,
+            metrics_cfg=bundle.metrics,
+            constraints_cfg=bundle.constraints,
+        )
+
+
+def test_approve_rejects_drifted_config(outcome, bundle) -> None:
+    """当前配置的哈希与 `tasks` 行记录的不一致时，审批必须被拒。
+
+    与报告渲染的处理刻意不同：`_check_config_binding()` 遇到漂移只把依赖当前配置
+    的段落标为"不可用"、继续渲染，因为任务跑完之后改配置是常事而报告是给人读的。
+    审批不能这样——`worst_case` 必须用当前 `metrics_cfg` 的 `primary.metric_id`
+    才算得出来（库里只有它的哈希），配置不是当初那份时，算出的 `worst_case` 与
+    `tasks` 行记录的 `metrics_hash` 描述的就不是同一件事。
+    """
+    from poweragent.report.context import (
+        ResultHashUnavailableError,
+        compute_result_hash,
+    )
+
+    result, store, _propose = outcome
+
+    # 只动 tie_tolerance：它不改变任何指标的算法，却足以让 metrics_hash 变化。
+    # 用这种"看起来无害"的改动，正是要说明判据是哈希相等而不是某种语义等价判断。
+    drifted = bundle.metrics.model_copy(
+        update={
+            "objective": bundle.metrics.objective.model_copy(
+                update={"tie_tolerance": bundle.metrics.objective.tie_tolerance + 0.1}
+            )
+        }
+    )
+
+    with pytest.raises(ResultHashUnavailableError, match="配置已漂移"):
+        compute_result_hash(
+            result.task_id,
+            store,
+            result.best_candidate_id,
+            metrics_cfg=drifted,
+            constraints_cfg=bundle.constraints,
+        )
+
+
+def test_cmd_report_approve_binds_the_recomputed_hash(
+    outcome, bundle, config_dir: Path, tmp_path, monkeypatch
+) -> None:
+    """`poweragent report --approve` 写入的审批行绑定的正是当前重算值。
+
+    走完整的 CLI 入口而不是直接调 `compute_result_hash()`：这条路径上还有双签
+    校验、`approvals` 落库与两个模块级默认路径的解析，它们一起构成 Checkpoint 3。
+
+    `monkeypatch.setattr` 替换两个模块级常量而不是 `chdir`：`_DEFAULT_CONFIG_DIR`
+    是相对路径 `configs/`，`chdir` 到 tmp_path 之后它就指不到仓库里的配置了。
+    """
+    from poweragent import cli
+    from poweragent.report.context import compute_result_hash
+
+    result, store, _propose = outcome
+    clone = _clone_store(store, tmp_path, "approve.db")
+    clone_path = tmp_path / "approve.db"
+    clone.connection.close()
+
+    monkeypatch.setattr(cli, "DEFAULT_DB_PATH", clone_path)
+    monkeypatch.setattr(cli, "_DEFAULT_CONFIG_DIR", config_dir)
+
+    exit_code = cli.cmd_report(
+        result.task_id,
+        approve=result.best_candidate_id,
+        approver="alice",
+        second_approver="bob",
+        note="smoke test approval",
+    )
+    assert exit_code == 0
+
+    reopened = Store(clone_path)
+    row = reopened.connection.execute(
+        "SELECT decision, approver, second_approver, candidate_id, result_hash "
+        "FROM approvals WHERE kind='final_recommendation'",
+    ).fetchone()
+    assert row is not None, "应写入一条 final_recommendation 审批行"
+    decision, approver, second_approver, candidate_id, stored_hash = row
+
+    assert decision == "approve"
+    assert (approver, second_approver) == ("alice", "bob")
+    assert candidate_id == result.best_candidate_id
+    assert stored_hash == compute_result_hash(
+        result.task_id,
+        reopened,
+        result.best_candidate_id,
+        metrics_cfg=bundle.metrics,
+        constraints_cfg=bundle.constraints,
+    ), "落库的 result_hash 必须等于同一库状态下的重算值"
+
+
+def test_cmd_report_approve_requires_two_distinct_approvers(
+    outcome, config_dir: Path, tmp_path, monkeypatch
+) -> None:
+    """双签必须是两个不同的人，同一个人签两次要被拒且不留审批行。
+
+    这条断言的落点在 `record_approval()`（`store/repo.py` 的结构性断言），
+    CLI 只负责把它转译成 `UsageError`。一并断言"没有写入任何行"：审批记录的
+    用途是不可否认，一条被拒的审批留在表里会让"谁批准了什么"变得可争辩。
+    """
+    import click
+
+    from poweragent import cli
+
+    result, store, _propose = outcome
+    clone = _clone_store(store, tmp_path, "samesigner.db")
+    clone_path = tmp_path / "samesigner.db"
+    clone.connection.close()
+
+    monkeypatch.setattr(cli, "DEFAULT_DB_PATH", clone_path)
+    monkeypatch.setattr(cli, "_DEFAULT_CONFIG_DIR", config_dir)
+
+    with pytest.raises(click.UsageError, match="second_approver != approver"):
+        cli.cmd_report(
+            result.task_id,
+            approve=result.best_candidate_id,
+            approver="alice",
+            second_approver="alice",
+        )
+
+    reopened = Store(clone_path)
+    count = reopened.connection.execute(
+        "SELECT COUNT(*) FROM approvals WHERE kind='final_recommendation'"
+    ).fetchone()[0]
+    assert count == 0, "被拒的审批不得留下 approvals 行"
+
+
+# --------------------------------------------------------------------------
+# worst-case 聚合跨评价场景
+# --------------------------------------------------------------------------
+
+
+def test_worst_case_aggregates_over_every_evaluation_scenario(outcome, bundle) -> None:
+    """主目标取遍所有评价场景的最差值，而不是某一个场景的值。
+
+    评价集只有一个场景时这条断言是空的——`max()` 作用在单元素集合上恒等于那个
+    元素，聚合与不聚合无从区分。`configs/task.yaml` 现有两个评价场景
+    （`eval_vin_min_step_max` / `eval_vin_max_unload`），因此这里能真正验证
+    `WORST_CASE_SQL` 的 `MAX(...)` 是跨场景取的。
+
+    同时验证 `HAVING` 完备性过滤的前提：进入排名的候选必须在**每个**评价场景上
+    都有一行有效的主目标指标。
+    """
+    from poweragent.eval.aggregate import rank
+
+    result, store, _propose = outcome
+
+    evaluation_ids = {
+        s.scenario_id for s in bundle.task.scenarios if s.tier == "evaluation"
+    }
+    assert len(evaluation_ids) >= 2, (
+        "本断言要求至少两个评价场景，否则跨场景聚合无从验证"
+    )
+
+    primary = bundle.metrics.objective.primary.metric_id
+    ranked = rank(store, result.task_id, bundle.metrics, top_n=10)
+    assert ranked, "应有可行候选进入排名"
+
+    for entry in ranked:
+        per_scenario = dict(
+            store.connection.execute(
+                "SELECT r.scenario_id, m.value FROM runs r "
+                "JOIN metric_results m ON m.run_id = r.run_id "
+                "JOIN scenario_set s ON s.task_id = r.task_id "
+                "                   AND s.scenario_id = r.scenario_id "
+                "WHERE r.task_id=? AND r.candidate_id=? AND s.tier='evaluation' "
+                "  AND m.metric_id=? AND m.valid=1",
+                (result.task_id, entry.candidate_id, primary),
+            ).fetchall()
+        )
+
+        assert set(per_scenario) == evaluation_ids, (
+            f"候选 {entry.candidate_id} 只在 {set(per_scenario)} 上有有效主目标，"
+            f"却仍进入了排名——HAVING 完备性过滤失效"
+        )
+
+        expected = max(per_scenario.values())
+        assert entry.worst_case_value == pytest.approx(expected), (
+            f"候选 {entry.candidate_id} 的 worst_case={entry.worst_case_value} "
+            f"与逐场景取值 {per_scenario} 的最大值 {expected} 不一致"
+        )
+
+
+def test_both_evaluation_scenarios_collect_margin(outcome, bundle) -> None:
+    """两个评价场景都落下了 PM/GM 两行指标。
+
+    `require_margin=true` 若在某个评价场景上漏掉，该场景会因支撑指标缺失被判
+    违反（R9.3），进而使每个候选都永远不可行。`test_config_contract.py` 从配置
+    侧断言了这一点，这里从落库结果侧确认它真的生效了。
+    """
+    result, store, _propose = outcome
+
+    rows = store.connection.execute(
+        "SELECT r.scenario_id, m.metric_id, COUNT(*) FROM runs r "
+        "JOIN metric_results m ON m.run_id = r.run_id "
+        "JOIN scenario_set s ON s.task_id = r.task_id "
+        "                   AND s.scenario_id = r.scenario_id "
+        "WHERE r.task_id=? AND s.tier='evaluation' "
+        "  AND m.metric_id IN ('phase_margin','gain_margin') "
+        "GROUP BY r.scenario_id, m.metric_id",
+        (result.task_id,),
+    ).fetchall()
+
+    collected: dict[str, set[str]] = {}
+    for scenario_id, metric_id, _count in rows:
+        collected.setdefault(scenario_id, set()).add(metric_id)
+
+    evaluation_ids = {
+        s.scenario_id for s in bundle.task.scenarios if s.tier == "evaluation"
+    }
+    for scenario_id in evaluation_ids:
+        assert collected.get(scenario_id) == {"phase_margin", "gain_margin"}, (
+            f"评价场景 {scenario_id} 未落下完整的 PM/GM，实际为 "
+            f"{collected.get(scenario_id)}"
+        )
