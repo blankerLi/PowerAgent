@@ -27,10 +27,29 @@ objective_target:                         # 给出则参与 controller.stop 的 
                                           # ——一次真实寻优在 23.2 µs 就触发 target_reached 停止，而
                                           # 那个解在 36 个可行点里只排第 15 位、仅略优于中位数。
                                           # 目标形同虚设时，「达标」这件事就不再说明任何搜索能力。
+                                          #
+                                          # 新增第二个评价场景（eval_vin_max_unload）后本值不变，
+                                          # 依据仍成立：worst-case 取两个评价场景的较差值，而该场景
+                                          # 在时域上系统性快于 eval_vin_min_step_max（9 个代表点实测
+                                          # 无一例外），因此每个候选的 worst-case settling_time 与
+                                          # 单场景时逐点相同。裕量侧确实变紧了（增益裕量 -1.84 dB），
+                                          # 但原 36 个可行点在新场景的裕量约束下全部仍满足
+                                          # （PM >= 45 且 GM >= 6 实测 36/36），可行集不变。
 
 budget:
-  max_engine_starts: 200                  # unit: 次 · 远小于 144 点 × 2 场景 = 288 次的全网格扫描，
-                                          # 搜索方法必须比穷举更省才有意义
+  max_engine_starts: 200                  # unit: 次 · 远小于全网格扫描：144 点 × 每点 5 次
+                                          # = 720 次。每点 5 次的构成是 screening 1 +
+                                          # 两个 evaluation 场景各 (仿真 1 + 裕量 1)——
+                                          # `metrics.yaml` 的
+                                          # extra_engine_starts_per_candidate = 1。
+                                          # 搜索方法必须比穷举更省才有意义。
+                                          #
+                                          # 加入第二个评价场景后每候选从 3 次变 5 次，
+                                          # 200 的额度因此从约 66 个候选降到约 40 个。
+                                          # 不上调：一次真实寻优实测 12 个候选就触发
+                                          # target_reached（36 次），5 次/候选下对应 60 次，
+                                          # 仍在额度内；预算上限的作用是兜住失控，
+                                          # 不是预留到用不完
   max_wallclock_hours: 2.0                # unit: h
   max_attempts_per_scenario: 2            # unit: 次 · 每候选每场景最大 attempt 数（2=最多重试1次）
   max_llm_repair_rounds: 2                # unit: 轮 · schema 校验失败的回灌修复上限（0 <= v <= 5）
@@ -64,6 +83,47 @@ scenarios:                                # 显式行，禁止笛卡尔积；程
     load_end_a: 150.0
     slew_a_per_us: 200.0                   # unit: A/us · 阶跃速率翻倍
     require_margin: true                   # 此行采集 PM/GM，对应 phase_margin_min 只在 evaluation 层生效
+
+  - scenario_id: eval_vin_max_unload       # 互补工况：高输入 + 常温 + 卸载
+    tier: evaluation
+    model_variant: switching
+    vin_v: 13.2                            # unit: V · 标称 12 V 的 +10%，覆盖输入电压的另一端
+    temp_c: 25.0                           # unit: degC · 常温。这一项是本场景存在的主要理由，
+                                           #   见下方"三处互补"第 2 条
+    load_start_a: 150.0                    # unit: A · 卸载：从满载降到半载，与上一行的加载方向相反
+    load_end_a: 100.0
+    slew_a_per_us: 200.0
+    require_margin: true                   # 必须为 true：phase_margin_min / gain_margin_min 的
+                                           #   applies_to_tier 含 evaluation，此行若不采裕量，
+                                           #   judge() 会因支撑指标缺失而判该场景违反（R9.3），
+                                           #   于是每个候选都永远不可行。
+    #
+    # 与 eval_vin_min_step_max 的三处互补，以及各自的实测依据：
+    #
+    # 1. 输入电压取另一端（13.2 vs 10.8）。
+    # 2. 温度取常温（25 vs 85）。**裕量只随 temp_c 变化**：开环传递函数
+    #    T(s) = gm(1+s·Rc·Cc)(1+s·C·ESR)/(Ri·Cc·C·s^2)·exp(-s·Td) 里唯一的工作点
+    #    相关量是 Ri，而 Ri 只随温度变（sim/backends/margin.py 的
+    #    open_loop_state_space）。vin 与负载都不出现在这个式子里——这是电流模式控制
+    #    的性质，不是建模疏漏。因此若本场景沿用 85 度，两个评价场景的 PM/GM 会
+    #    **逐位相同**（实测 dPM=dGM=0.000），那次额外的 linearize 就是白花的预算。
+    #    取 25 度后 Ri 从 0.002472 降到 0.002000，增益裕量一致降低 1.84 dB
+    #    （GM 与 Ri 成正比），于是 gain_margin 的 worst-case 由本场景决定。
+    # 3. 负载方向取卸载。加载考验下冲与 vout_min，卸载考验过冲与 vout_max。实测
+    #    过冲从 1~8 mV（加载）升到 14~23 mV，vout_max 从 0.8024 升到 0.8143
+    #    （工程基线 0.8386）；限值 0.85 的余量因此从约 42 mV 收到约 11 mV，
+    #    vout_max 这条约束才开始有实际区分力。
+    #
+    # 已知的局限，如实记录：本场景在**时域**上系统性快于 eval_vin_min_step_max
+    # （9 个代表点实测 4.2~45.8 us vs 5.2~51.2 us，无一例外），因此主目标
+    # settling_time 的 worst-case 仍恒由上一个场景决定。原因是低温使环路增益变大、
+    # 卸载又不受 (Vin-Vout)/L 的电流上升率限制，两者都让响应更快。本场景的作用
+    # 落在 gain_margin 与 vout_max 两项约束上，不在主目标数值上。
+    #
+    # 曾评估过一个在时域上也更严苛的替代方案（vin=10.8, 25 度, 负载 50->150 的
+    # 100 A 跳变）：5 个代表点全部比现有场景慢，但相电流峰值达 54.5 A，距
+    # peak_current_max=55.0 只剩 0.5 A 余量，且会缩小可行域、使 objective_target
+    # 的依据（下方那次 144 点扫描）失效而必须重扫重定。留待需要时再取。
 
 robustness:                                # 仅 M6 对 Top 候选生效；本阶段范围裁剪中已移除 robustness.sweep，
                                            # 字段保留以满足配置契约（loader 要求非占位）

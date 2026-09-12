@@ -40,6 +40,7 @@ def test_load_all_accepts_filled_configs(config_dir: Path) -> None:
     assert [s.scenario_id for s in bundle.task.scenarios] == [
         "scr_nom",
         "eval_vin_min_step_max",
+        "eval_vin_max_unload",
     ]
 
 
@@ -74,6 +75,34 @@ def test_phase_margin_constraint_applies_only_to_evaluation_tier(config_dir: Pat
 
     margin_tiers = {s.tier for s in bundle.task.scenarios if s.require_margin}
     assert margin_tiers == {"evaluation"}
+
+
+def test_every_evaluation_scenario_collects_margin(config_dir: Path) -> None:
+    """**每个** evaluation 场景都必须 `require_margin=true`，一个都不能漏。
+
+    这是上一条断言的反方向，两条都需要。上一条查的是"采裕量的场景都属于
+    evaluation 层"，它不能排除"某个 evaluation 场景没采裕量"——而后者的后果要
+    严重得多，且完全静默：
+
+    `phase_margin_min` / `gain_margin_min` 的 `applies_to_tier` 含 `evaluation`，
+    于是 `judge()` 会对每个 evaluation 场景判这两条约束。某个场景没采裕量时，
+    支撑指标缺失，按 R9.3 一律判违反 ⟹ 该场景不可行 ⟹ worst-case 聚合的
+    `HAVING` 完备性过滤排除掉这个候选。结果是**每个候选都永远不可行**，任务跑完
+    选不出任何解，而配置校验、仿真、指标计算全程不报任何错。
+
+    加第二个评价场景时确实踩到过这个坑（当时 `require_margin` 留了 false，
+    9 个已知可行的代表点全部被判不可行）。
+    """
+    bundle = load_all(config_dir)
+
+    missing = [
+        s.scenario_id
+        for s in bundle.task.scenarios
+        if s.tier == "evaluation" and not s.require_margin
+    ]
+    assert not missing, (
+        f"evaluation 场景 {missing} 未采集裕量，会使每个候选都永远不可行"
+    )
 
 
 def test_divergence_guard_is_looser_than_hard_constraints(config_dir: Path) -> None:
