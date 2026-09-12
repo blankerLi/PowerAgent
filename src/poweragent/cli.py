@@ -34,34 +34,31 @@
 
 ## 软依赖（下游函数尚未落地时的过渡处理）
 
-以下四个下游函数在本任务撰写时尚未落地，属于与本任务并行或晚于本任务派发的其他
+以下下游函数在本任务撰写时尚未落地，属于与本任务并行或晚于本任务派发的其他
 任务的职责范围（`sim/hashing.py` 顶部对 `config/hashing.py` 的软依赖说明是同一
 模式，此处沿用）：
 
-- `controller.run_task.run_task()`（任务 14.4/14.5）——`cmd_run` 按 design.md
-  §6.2.1 给出的签名 `run_task(task_cfg, model_cfg, metrics_cfg, constraints_cfg,
-  *, resume=False) -> TaskOutcome` 编写调用点；`controller/run_task.py` 模块本身
-  目前不存在，import 会失败。
-- `report.render.render_report()`（任务 26.x，远期波次）——`cmd_report` 在无
-  `--approve`/`--reject` 时的纯渲染分支按 design.md §6.10 给出的签名
-  `render_report(task_id, *, store, out=None) -> Path` 编写调用点；`report/`
-  包目前只有空的 `__init__.py`。
 - `sim.apply_model.apply_candidate()`（design.md §6.3.3，未落地）——`cmd_apply`
   按签名 `apply_candidate(candidate_id, *, approval_id, model_cfg, store,
   session) -> AppliedModel` 编写调用点；`sim/apply_model.py` 模块目前不存在。
-- `_compute_current_result_hash()`（本文件内的占位函数）——`cmd_report` 的
-  `--approve`/`--reject` 分支需要按 `config/hashing.py` 的 `result_hash()` 重算
-  范围（`{candidate_id, parameters_si, worst_case, per_scenario, constraints,
-  model_package_hash, constraints_hash, metrics_hash, scenario_set_hash}`）为
-  目标候选算出当前值，但从数据库聚合出这 9 个字段（尤其是 `worst_case` 与按场景
-  排序的 `per_scenario`/`constraints`）是报告聚合层（`report/render.py` 与
-  `eval/aggregate.py`，均为远期任务）的职责，本文件不重复实现该聚合逻辑。占位
-  函数抛 `NotImplementedError`，`cmd_report` 捕获后转译为一条清晰的
-  `UsageError`（"pending report/aggregate wiring"），退出码 1，而不是让原始
-  traceback 冒出来。
 
-四者一旦落地，`cli.py` 侧的调用点不需要改动（签名已按各自设计文档的约定编写），
-只需删除上面对应的软依赖说明段落。
+一旦落地，`cli.py` 侧的调用点不需要改动（签名已按其设计文档的约定编写），只需
+删除上面对应的软依赖说明段落。
+
+已经解除的软依赖（保留记录，因为它们各自的接线方式是本文件的既定结构）：
+
+- `controller.run_task.run_task()`（任务 14.4/14.5）已落地，`cmd_run` 直接调用。
+- `report.render.render_report()` 已落地；`cmd_report` 的纯渲染分支仍保留
+  `try: from ... import render_report except ImportError` 这一层，因为该模块
+  import jinja2——渲染依赖缺失时应当给出一句提示并返回退出码 1，而不是让整个
+  `poweragent` 命令组在 import 期崩掉（`log` 等与渲染无关的子命令不该被连带
+  拖死）。
+- `_compute_current_result_hash()` 此前是抛 `NotImplementedError` 的占位函数，
+  其阻塞理由是"从数据库聚合出那 9 个字段是报告聚合层的职责，而该层未落地"。
+  `report/context.py` 与 `eval/aggregate.py` 均已落地，桩已按当初写下的分工
+  填实：聚合本身在 `report.context.compute_result_hash()`（9 键里 7 个的数据源
+  它已为报告渲染各查过一遍），本文件只保留 CLI 边界该管的那一件事——配置目录
+  默认取 `configs/`。
 
 ## `Store` 的构造与 `--task` 存在性校验
 
@@ -116,6 +113,14 @@ __all__ = [
 
 
 DEFAULT_DB_PATH = Path("runs.db")
+
+# 配置目录的默认取值，与 `report.render.DEFAULT_CONFIG_DIR` 及 `cmd_run`
+# （`config_dir = task_yaml.resolve().parent`）是同一约定：配置在仓库根的
+# `configs/` 下，design.md 全篇示例均用相对路径，没有任何 CLI 选项承载可配置的
+# 配置目录。不从 `report.render` 导入那个同名常量：该模块 import jinja2，而本
+# 文件对报告渲染是软依赖（渲染不可用时要给出提示而不是崩在 import 上），为一个
+# 路径字面量把整条软依赖链拉到模块级不划算。
+_DEFAULT_CONFIG_DIR = Path("configs")
 
 # design.md §6.1 / requirements.md Requirement 16 AC8, Requirement 20 AC8：
 # LLM API Key 只从该环境变量读取，不写入四个 YAML、不入库（`llm_calls` 只存
@@ -397,23 +402,38 @@ def build_run_snapshot(
     )
 
 
-def _compute_current_result_hash(store: Store, task_id: str, candidate_id: str) -> str:
-    """占位：从库内当前状态为 `candidate_id` 重算 `result_hash`（`config.hashing.
-    result_hash()` 的 9 键范围）。
+def _compute_current_result_hash(
+    store: Store,
+    task_id: str,
+    candidate_id: str,
+    *,
+    config_dir: Path | None = None,
+) -> str:
+    """从库内当前状态为 `candidate_id` 重算 `result_hash`（`config.hashing.
+    result_hash()` 的 9 键范围），供 `cmd_report` 的 Checkpoint 3 审批绑定。
 
-    真正的实现需要把 `{candidate_id, parameters_si, worst_case, per_scenario,
-    constraints, model_package_hash, constraints_hash, metrics_hash,
-    scenario_set_hash}` 从 `Store` 的多张表聚合出来（worst-case 聚合 SQL 见
-    design.md §5.4；逐场景指标与约束判定需要 `metric_results`/`constraint_results`
-    的联表查询）——这是报告聚合层（`report/render.py` / `eval/aggregate.py`）
-    的职责，均为远期波次的任务，本文件不重复实现该聚合逻辑（软依赖，见模块
-    docstring）。调用方（`cmd_report`）捕获本函数的 `NotImplementedError` 并转译
-    为退出码 1 的清晰提示，而不是让原始 traceback 冒出来。
+    聚合逻辑本身在 `report.context.compute_result_hash()`——9 个键里有 7 个的
+    数据源那里已经为报告渲染各查过一遍，在本文件重写那几段联表 SQL 会引入两处
+    必须逐字符同步的查询（详见该函数上方的模块内说明）。本函数只承担 CLI 边界
+    的一件事：**决定配置从哪读**。
+
+    `config_dir` 默认 `configs/`，与 `report.render.DEFAULT_CONFIG_DIR` 及
+    `cmd_run` 是同一约定（design.md 全篇示例均用相对路径，没有任何 CLI 选项
+    承载可配置的配置目录）。它是 kwonly 参数只为让测试指向 fixture 配置，
+    `cmd_report` 的调用点不传。
+
+    配置漂移 / 候选不存在 / 候选未通过完备性过滤三种情形抛
+    `ResultHashUnavailableError`，由调用方转译为 `click.UsageError`。
     """
-    raise NotImplementedError(
-        "_compute_current_result_hash: pending report/aggregate wiring "
-        "(report/render.py 与 eval/aggregate.py 尚未落地，无法从库内状态重算 "
-        f"candidate_id={candidate_id!r} 在 task_id={task_id!r} 下的 result_hash)"
+    from poweragent.report.context import compute_result_hash
+
+    bundle = load_all(config_dir or _DEFAULT_CONFIG_DIR)
+    return compute_result_hash(
+        task_id,
+        store,
+        candidate_id,
+        metrics_cfg=bundle.metrics,
+        constraints_cfg=bundle.constraints,
     )
 
 
@@ -596,6 +616,11 @@ def cmd_report(
     - `--approve` 与 `--reject` 同时给出（互斥）。
     - `--approve` 给出但缺 `--approver` 或 `--second-approver`。
     - `--reject` 给出但缺 `--approver`。
+    - `result_hash` 算不出来：当前 `metrics.yaml`/`constraints.yaml` 的哈希与
+      `tasks` 行记录的不一致（配置漂移）、`candidate_id` 不在 `candidates`
+      表中、或该候选未通过 worst-case 聚合的完备性过滤（有场景没跑完，或在某个
+      评价场景上不可行）。这一步排在 `record_approval()` 之前：审批行一旦落库
+      即为不可否认的记录，不能先写行再发现它绑定的哈希算不出来。
 
     `approver` / `second_approver` 两个形参的取值只来自上面 `--approver` /
     `--second-approver` 两个 `click.Option`（均未设 `envvar=`）——本函数在
@@ -619,10 +644,20 @@ def cmd_report(
 
     candidate_id = approve or reject
     if candidate_id is not None:
+        # 配置漂移 / 候选不存在 / 候选未通过 worst-case 完备性过滤三种情形下
+        # 不存在可绑定的结果，转译为退出码 1 的清晰提示，不写 `approvals` 行。
+        # 这一步刻意在 `record_approval()` 之前：审批行一旦落库就是不可否认的
+        # 记录，不能先写行再发现绑定的哈希算不出来。
+        from poweragent.report.context import ResultHashUnavailableError
+
         try:
             result_hash = _compute_current_result_hash(store, task_id, candidate_id)
-        except NotImplementedError as exc:
+        except ResultHashUnavailableError as exc:
             raise click.UsageError(str(exc)) from exc
+        except ConfigLoadError as exc:
+            raise click.UsageError(
+                f"configs/ 加载失败，无法重算 result_hash：{exc}"
+            ) from exc
 
         rec = ApprovalRecord(
             task_id=task_id,

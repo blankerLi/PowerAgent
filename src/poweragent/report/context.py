@@ -40,16 +40,18 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from poweragent.config.hashing import constraints_hash, metrics_hash
+from poweragent.config.hashing import constraints_hash, metrics_hash, result_hash
 from poweragent.config.schema import ConstraintsConfig, MetricsConfig, TaskConfig
 from poweragent.config.ticks import expand_all_ticks
-from poweragent.eval.aggregate import rank
+from poweragent.eval.aggregate import rank, worst_case
 from poweragent.store.repo import Store
 
 __all__ = [
     "UNAVAILABLE",
     "ReportContext",
+    "ResultHashUnavailableError",
     "build_context",
+    "compute_result_hash",
     "format_value",
 ]
 
@@ -578,4 +580,154 @@ def build_context(
                 trustworthy=trustworthy,
             )
         ),
+    )
+
+
+# ===========================================================================
+# compute_result_hash()：Checkpoint 3 审批与 apply 前比对所绑定的结果哈希
+#
+# design.md §5.3.1「`result_hash` 的重算范围」/ §7.6 / §8.10；CP-10。
+#
+# ## 为什么落在本模块
+#
+# `cli.py` 的 `_compute_current_result_hash()` 此前是一个 `raise
+# NotImplementedError` 的桩，其 docstring 写明"这是报告聚合层
+# （`report/render.py` / `eval/aggregate.py`）的职责，均为远期波次的任务"。
+# 那两处现已落地，桩的阻塞理由不再成立。9 个键里有 7 个的数据源本模块已经为
+# 报告渲染各查过一遍：
+#
+#   parameters_si            _fetch_candidate_parameters()
+#   per_scenario             _fetch_metrics_for_candidate()
+#   constraints              _fetch_constraint_rows()
+#   四个哈希                  _fetch_task_row()
+#
+# 在 `cli.py` 里重写这四段 SQL 会引入两处必须逐字符保持同步的联表查询，而它们
+# 的语义有讲究（只取 `tier='evaluation'`：worst-case 与 Top 名次都定义在评价集
+# 上，混入筛选层会让同一个候选的同一个指标出现两个值）。复用比重写安全。
+#
+# ## 四个哈希取自 `tasks` 行，不由当前配置重算
+#
+# `tasks` 表的六个哈希是"这次任务用的是哪个版本的什么东西"的权威记录。若改为
+# 从当前 `configs/` 重算，同一个 `task_id` 在两个工作目录下会算出不同的
+# `result_hash`，而库内状态一个字节都没变——那样这个哈希就不再是"绑定这份结果"
+# 而是"绑定这台机器此刻的配置"。
+#
+# ## 配置漂移在这里是错误，而报告渲染时不是
+#
+# `_check_config_binding()` 对同一件事的处理是"不一致不阻止渲染，只把依赖当前
+# 配置的段落标为不可用"——因为任务跑完之后改配置是常事，而报告的用途是让人读。
+# 审批不能这样处理，原因是 `worst_case` 这一项**必须**用当前加载的
+# `metrics_cfg` 才算得出来：`objective.primary.metric_id` 只存在于
+# `metrics.yaml`，库里只有它的哈希。于是有两种可能：
+#
+#   一致  ⟹ 当前配置就是当初那份，`worst_case` 与库内四个哈希自洽；
+#   不一致 ⟹ 用另一份配置的 `primary.metric_id` 去聚合库内数据，算出的
+#            `worst_case` 与 `tasks` 行记录的 `metrics_hash` 描述的不是同一件
+#            事，拼进同一个 payload 得到的哈希没有可解释的含义。
+#
+# 第二种情况下唯一诚实的行为是拒绝并说明，而不是产出一个"能通过但含义模糊"的
+# 哈希——`approvals.result_hash` 的全部价值在于 `apply` 时重算比对能挡住误签，
+# 一个含义模糊的值会让这道闸门看起来在工作而实际不在。
+#
+# ## `per_scenario` 必须投影掉 `invalid_reason`
+#
+# design.md §5.3.1 把 `per_scenario` 的行形状定为恰好
+# `{scenario_id, metric_id, value, valid}` 四键，而
+# `_fetch_metrics_for_candidate()` 为报告多带了一个 `invalid_reason`。
+# `result_hash()` 只忽略 **payload 顶层**的多余键，行内的多余键会照样进
+# `canonical_json`。不投影就会算出一个与 design.md 定义不同的哈希——而且这个
+# 偏差不会报错，只会让"重算比对"在两个都自称正确的实现之间永远不一致。
+# ===========================================================================
+
+
+class ResultHashUnavailableError(RuntimeError):
+    """无法为某个候选重算 `result_hash`，因此不能对它签审批。
+
+    三种触发情形（都不是"稍后重试就会好"的瞬时问题，而是"这次审批本身不该
+    发生"）：
+
+    - 当前 `metrics.yaml` / `constraints.yaml` 的哈希与 `tasks` 行记录的不一致
+      （配置漂移，见模块内 `compute_result_hash` 上方一节）。
+    - `candidate_id` 不在 `candidates` 表中。
+    - `candidate_id` 未通过 worst-case 聚合的完备性/可行性过滤：它要么有场景
+      没跑完，要么在某个评价场景上不可行。这样的候选没有"最终结果"可绑定，
+      审批它是无意义的。
+    """
+
+
+def compute_result_hash(
+    task_id: str,
+    store: Store,
+    candidate_id: str,
+    *,
+    metrics_cfg: MetricsConfig,
+    constraints_cfg: ConstraintsConfig,
+) -> str:
+    """从库内当前状态为 `candidate_id` 重算 `result_hash`（9 键范围见
+    `config.hashing.result_hash()`）。
+
+    参数顺序与 `build_context()` 一致（`task_id` 在前、`store` 次之、配置以
+    kwonly 显式传入），本函数同为纯读函数：不写任何表、不落任何文件。
+
+    不可用时抛 `ResultHashUnavailableError`，由 `cli.cmd_report` 转译为
+    `click.UsageError`（退出码 1），不写 `approvals` 行。
+    """
+    task_row = _fetch_task_row(store, task_id)
+
+    current_metrics = metrics_hash(metrics_cfg.model_dump(mode="json"))
+    current_constraints = constraints_hash(constraints_cfg.model_dump(mode="json"))
+    drifted = [
+        name
+        for name, current, recorded in (
+            ("metrics_hash", current_metrics, task_row["metrics_hash"]),
+            ("constraints_hash", current_constraints, task_row["constraints_hash"]),
+        )
+        if current != recorded
+    ]
+    if drifted:
+        raise ResultHashUnavailableError(
+            f"配置已漂移，无法为 task_id={task_id!r} 的候选重算 result_hash："
+            f"{', '.join(drifted)} 与 tasks 行记录的取值不一致。"
+            "审批必须绑定任务当初那份配置下的结果；"
+            "请改回当初的配置，或对当前配置重跑一次任务。"
+        )
+
+    parameters_si = _fetch_candidate_parameters(store, candidate_id)
+    if not parameters_si:
+        raise ResultHashUnavailableError(
+            f"candidate_id={candidate_id!r} 不在 candidates 表中"
+        )
+
+    worst_by_candidate = worst_case(store, task_id, metrics_cfg)
+    if candidate_id not in worst_by_candidate:
+        raise ResultHashUnavailableError(
+            f"candidate_id={candidate_id!r} 未通过 worst-case 聚合的完备性过滤："
+            "它或有评价场景未跑完，或在某个评价场景上不可行，"
+            "没有可供审批绑定的最终结果。"
+        )
+
+    # design.md §5.3.1 的行形状恰为四键；`invalid_reason` 是报告用的额外列，
+    # 留在行内会进 canonical_json（见模块内上方"必须投影掉"一节）。
+    per_scenario = [
+        {
+            "scenario_id": row["scenario_id"],
+            "metric_id": row["metric_id"],
+            "value": row["value"],
+            "valid": row["valid"],
+        }
+        for row in _fetch_metrics_for_candidate(store, task_id, candidate_id)
+    ]
+
+    return result_hash(
+        {
+            "candidate_id": candidate_id,
+            "parameters_si": parameters_si,
+            "worst_case": worst_by_candidate[candidate_id],
+            "per_scenario": per_scenario,
+            "constraints": _fetch_constraint_rows(store, task_id, candidate_id),
+            "model_package_hash": task_row["model_package_hash"],
+            "constraints_hash": task_row["constraints_hash"],
+            "metrics_hash": task_row["metrics_hash"],
+            "scenario_set_hash": task_row["scenario_set_hash"],
+        }
     )
